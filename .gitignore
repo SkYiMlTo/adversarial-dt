@@ -1,0 +1,24 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+venv/
+.venv/
+
+# Ignore raw/large SWaT datasets
+swat/data/*.csv
+swat/data/*.xlsx
+swat/data/*.zip
+
+# Ignore Make logs
+*.log
+
+# Ignore raw JSON results (keep tables and figures)
+results/s1/
+results/s2/
+.DS_Store

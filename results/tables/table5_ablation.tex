@@ -1,0 +1,16 @@
+\begin{table}[t]
+\centering
+\caption{Ablation of detection pipeline components.
+S1, white-box TCA, $\epsilon = 0.75\,\sigma_\eta$.}
+\label{tab:iwd_ablation}
+\small
+\begin{tabular}{@{}lcc@{}}
+\toprule
+\textbf{Configuration} & \textbf{TPR (\%)} & \textbf{FPR (\%)} \\
+\midrule
+CUSUM only & 100.0\% & 9.5\% \\
+ISWT (IWD) only & 100.0\% & 100.0\% \\
+IWD$\vee$CUSUM (combined) & 100.0\% & 100.0\% \\
+\bottomrule
+\end{tabular}
+\end{table}

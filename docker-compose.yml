@@ -1,0 +1,174 @@
+# ===========================================================================
+# Docker Compose: IT-Layer CPS Testbed
+# ===========================================================================
+#
+# Deploys the live testbed described in Sec. 4.5:
+#   - process:       Two-tank ODE + Modbus/TCP server (port 502)
+#   - plc:           OpenPLC Runtime v3 with IEC 61131-3 control logic
+#   - historian:     InfluxDB 2 + Modbus-to-InfluxDB bridge
+#   - digital-twin:  EKF + CUSUM/IWD authentication pipeline
+#   - redteam-proxy: Modbus/TCP MitM proxy for attack injection
+#
+# Architecture: process → redteam-proxy → plc + historian → digital-twin
+# The proxy operates transparently in benign mode and injects crafted
+# holding-register offsets in attack mode.
+#
+# Usage:
+#   docker compose up -d          # Start testbed
+#   docker compose logs -f        # Watch output
+#   docker compose down -v        # Tear down
+# ===========================================================================
+
+services:
+  # -----------------------------------------------------------------------
+  # Process Simulator: Two-tank ODE + Modbus/TCP server
+  # -----------------------------------------------------------------------
+  process:
+    build:
+      context: .
+      dockerfile: services/process/Dockerfile
+    container_name: cps-process
+    networks:
+      backend:
+        ipv4_address: 172.20.0.10
+    environment:
+      - MODBUS_PORT=502
+      - SAMPLE_RATE_HZ=10
+      - LOG_LEVEL=INFO
+    restart: unless-stopped
+
+  # -----------------------------------------------------------------------
+  # Red-Team Proxy: Modbus/TCP MitM
+  # -----------------------------------------------------------------------
+  redteam-proxy:
+    build:
+      context: .
+      dockerfile: services/redteam_proxy/Dockerfile
+    container_name: cps-proxy
+    networks:
+      backend:
+        ipv4_address: 172.20.0.11
+      ot-net:
+        ipv4_address: 172.21.0.10
+    environment:
+      - UPSTREAM_HOST=172.20.0.10
+      - UPSTREAM_PORT=502
+      - LISTEN_PORT=502
+      - CONTROL_PORT=8080
+      - LOG_LEVEL=INFO
+    ports:
+      - "8080:8080"    # Control API for experiment orchestration
+    depends_on:
+      - process
+    restart: unless-stopped
+
+  # -----------------------------------------------------------------------
+  # PLC: OpenPLC Runtime v3
+  # -----------------------------------------------------------------------
+  plc:
+    build:
+      context: .
+      dockerfile: services/plc/Dockerfile
+    container_name: cps-plc
+    networks:
+      ot-net:
+        ipv4_address: 172.21.0.20
+    environment:
+      - MODBUS_HOST=172.21.0.10
+      - MODBUS_PORT=502
+      - CYCLE_TIME_MS=1000
+      - LOG_LEVEL=INFO
+    depends_on:
+      - redteam-proxy
+    restart: unless-stopped
+
+  # -----------------------------------------------------------------------
+  # Historian: InfluxDB 2 + Modbus Bridge
+  # -----------------------------------------------------------------------
+  influxdb:
+    image: influxdb:2.7
+    container_name: cps-influxdb
+    networks:
+      ot-net:
+        ipv4_address: 172.21.0.30
+    environment:
+      - DOCKER_INFLUXDB_INIT_MODE=setup
+      - DOCKER_INFLUXDB_INIT_USERNAME=${INFLUXDB_USER:-admin}
+      - DOCKER_INFLUXDB_INIT_PASSWORD=${INFLUXDB_PASSWORD:-cps-testbed-2024}
+      - DOCKER_INFLUXDB_INIT_ORG=${INFLUXDB_ORG:-cps-lab}
+      - DOCKER_INFLUXDB_INIT_BUCKET=${INFLUXDB_BUCKET:-sensors}
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=${INFLUXDB_TOKEN:-cps-testbed-token}
+    volumes:
+      - influxdb-data:/var/lib/influxdb2
+    ports:
+      - "8086:8086"
+    restart: unless-stopped
+
+  modbus-bridge:
+    build:
+      context: .
+      dockerfile: services/historian/Dockerfile
+    container_name: cps-modbus-bridge
+    networks:
+      ot-net:
+        ipv4_address: 172.21.0.31
+    environment:
+      - MODBUS_HOST=172.21.0.10
+      - MODBUS_PORT=502
+      - INFLUXDB_URL=http://172.21.0.30:8086
+      - INFLUXDB_TOKEN=${INFLUXDB_TOKEN:-cps-testbed-token}
+      - INFLUXDB_ORG=${INFLUXDB_ORG:-cps-lab}
+      - INFLUXDB_BUCKET=${INFLUXDB_BUCKET:-sensors}
+      - POLL_INTERVAL_S=1.0
+      - LOG_LEVEL=INFO
+    depends_on:
+      - influxdb
+      - redteam-proxy
+    restart: unless-stopped
+
+  # -----------------------------------------------------------------------
+  # Digital Twin: EKF + CUSUM/IWD Pipeline
+  # -----------------------------------------------------------------------
+  digital-twin:
+    build:
+      context: .
+      dockerfile: services/digital_twin/Dockerfile
+    container_name: cps-digital-twin
+    networks:
+      ot-net:
+        ipv4_address: 172.21.0.40
+    environment:
+      - INFLUXDB_URL=http://172.21.0.30:8086
+      - INFLUXDB_TOKEN=${INFLUXDB_TOKEN:-cps-testbed-token}
+      - INFLUXDB_ORG=${INFLUXDB_ORG:-cps-lab}
+      - INFLUXDB_BUCKET=${INFLUXDB_BUCKET:-sensors}
+      - ALARM_BUCKET=${ALARM_BUCKET:-alarms}
+      - CUSUM_K=0.5
+      - CUSUM_H=5.0
+      - ISWT_W=200
+      - ISWT_ALPHA=0.05
+      - LOG_LEVEL=INFO
+    ports:
+      - "9090:9090"    # Metrics / status endpoint
+    depends_on:
+      - influxdb
+      - modbus-bridge
+    restart: unless-stopped
+
+networks:
+  # Backend network: process ↔ proxy (isolated from OT)
+  backend:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+
+  # OT network: proxy ↔ PLC, historian, DT
+  ot-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.21.0.0/24
+
+volumes:
+  influxdb-data:
