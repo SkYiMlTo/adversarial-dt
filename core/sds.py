@@ -52,7 +52,8 @@ def compute_sds(G: np.ndarray, test_stat: float,
                 compromised_idx: np.ndarray,
                 h: float = 5.0,
                 n_sensors: int = 6,
-                alpha: float = 0.05) -> dict:
+                alpha: float = 0.05,
+                custom_critical: Optional[float] = None) -> dict:
     """Compute the Sensor Deception Score (Eq. 11).
 
     SDS = ψ · (1/|B|) Σ_{i∈B} φ_i
@@ -64,6 +65,7 @@ def compute_sds(G: np.ndarray, test_stat: float,
         h: CUSUM alarm threshold.
         n_sensors: Total number of sensors (N).
         alpha: ISWT significance level.
+        custom_critical: Calibrated critical value.
 
     Returns:
         Dictionary with:
@@ -72,9 +74,12 @@ def compute_sds(G: np.ndarray, test_stat: float,
             - 'phi_mean': average CUSUM evasion for compromised sensors
             - 'psi': whiteness preservation score
     """
-    # Degrees of freedom for ISWT (full covariance matrix)
-    dof = n_sensors * (n_sensors + 1) // 2
-    critical = chi2.ppf(1 - alpha, dof)
+    if custom_critical is not None:
+        critical = custom_critical
+    else:
+        # Degrees of freedom for ISWT (full covariance matrix)
+        dof = n_sensors * (n_sensors + 1) // 2
+        critical = chi2.ppf(1 - alpha, dof)
 
     # CUSUM evasion per sensor
     phi = compute_phi(G, h)
@@ -105,7 +110,8 @@ def compute_sds_timeseries(G_all: np.ndarray,
                            compromised_idx: np.ndarray,
                            h: float = 5.0,
                            n_sensors: int = 6,
-                           alpha: float = 0.05) -> dict:
+                           alpha: float = 0.05,
+                           custom_critical: Optional[float] = None) -> dict:
     """Compute SDS over a time series.
 
     Args:
@@ -115,6 +121,7 @@ def compute_sds_timeseries(G_all: np.ndarray,
         h: CUSUM alarm threshold.
         n_sensors: Total number of sensors.
         alpha: ISWT significance level.
+        custom_critical: Empirically calibrated threshold.
 
     Returns:
         Dictionary with (T,) arrays.
@@ -126,7 +133,7 @@ def compute_sds_timeseries(G_all: np.ndarray,
 
     for t in range(T):
         result = compute_sds(G_all[t], test_stat_all[t],
-                             compromised_idx, h, n_sensors, alpha)
+                             compromised_idx, h, n_sensors, alpha, custom_critical)
         sds_all[t] = result['sds']
         phi_mean_all[t] = result['phi_mean']
         psi_all[t] = result['psi']
@@ -144,7 +151,7 @@ def compute_sds_timeseries(G_all: np.ndarray,
 # ======================================================================
 
 def sds_torch(G, lambda_iw, compromised_idx, h=5.0,
-              n_sensors=6, alpha=0.05, W=200):
+              n_sensors=6, alpha=0.05, W=200, custom_critical=None):
     """Differentiable SDS for TCA optimization.
 
     Args:
@@ -155,14 +162,18 @@ def sds_torch(G, lambda_iw, compromised_idx, h=5.0,
         n_sensors: Number of sensors.
         alpha: Significance level.
         W: ISWT window size.
+        custom_critical: Empirically calibrated threshold.
 
     Returns:
         sds_mean: Scalar mean SDS (optimization objective).
     """
     import torch
 
-    dof = n_sensors * (n_sensors + 1) // 2
-    critical = chi2.ppf(1 - alpha, dof)
+    if custom_critical is not None:
+        critical = custom_critical
+    else:
+        dof = n_sensors * (n_sensors + 1) // 2
+        critical = chi2.ppf(1 - alpha, dof)
 
     # φ_i = clamp(1 - G_i/h, min=0)
     phi = torch.clamp(1.0 - G / h, min=0.0)  # (T, N)

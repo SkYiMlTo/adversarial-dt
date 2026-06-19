@@ -117,6 +117,10 @@ def generate_synthetic_data(config: ExperimentConfig) -> dict:
     Y_test[a1_start:a1_end, 0] += 3.0 * sys_cfg.sigma[0]
     labels[a1_start:a1_end] = 1
 
+    from core.calibration import full_calibration
+    T_calib = min(T_train, config.s1_calibration_steps)
+    calib = full_calibration(sys_cfg, T_calib, seed=config.seed)
+
     return {
         'train': {
             'Y': sim_train['y_noisy'],
@@ -131,9 +135,9 @@ def generate_synthetic_data(config: ExperimentConfig) -> dict:
             'sensor_names': sys_cfg.sensor_names,
         },
         'source': 'synthetic',
-        'ekf_config': EKFConfig(Q_diag=np.diag(Q_hat)),
-        'iswt_config': iswt_cfg,
-        'Q': Q_hat, 'R': R,
+        'ekf_config': calib['ekf_config'],
+        'iswt_config': calib['iswt_config'],
+        'Q': calib['Q'], 'R': calib['R'],
         'attack_info': {
             'A1': {'start': 2000, 'end': 4000, 'type': 'steady_offset', 'sensors': ['L1'], 'magnitude': '3σ'}
         }
@@ -212,6 +216,8 @@ def run_table4_s2(config: ExperimentConfig, data: dict) -> dict:
     N = sys_cfg.n_sensors
     ekf_cfg = data['ekf_config']
     iswt_cfg = data['iswt_config']
+    Q = data['Q']
+    R = data['R']
 
     start = data['attack_info']['A1']['start'] if 'attack_info' in data else 2000
     T_window = 600
@@ -242,7 +248,7 @@ def run_table4_s2(config: ExperimentConfig, data: dict) -> dict:
                 # Evaluate detection on attacked data
                 Y_pert = Y_attack + tca_result['delta']
                 ekf = ExtendedKalmanFilter(sys_cfg, ekf_cfg)
-                ekf.set_noise_covariances(Q_hat, R)
+                ekf.set_noise_covariances(Q, R)
                 ekf_res = ekf.run_batch(Y_pert, U_attack)
 
                 cusum = CUSUMDetector(N, config.cusum)

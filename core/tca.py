@@ -138,14 +138,13 @@ class TargetedConsistencyAttack:
                                     h=self.cusum_cfg.h,
                                     n_sensors=N,
                                     alpha=self.iswt_cfg.alpha,
-                                    W=self.iswt_cfg.W)
+                                    W=self.iswt_cfg.W,
+                                    custom_critical=self.iswt_cfg.critical_value(N))
                 sds_scalar = sds_val.item()
 
             # Smooth surrogate objective for PGD (additive, no clipping)
             # Maximize this: keep CUSUM low, keep ISWT low.
-            from scipy.stats import chi2
-            dof = N * (N + 1) / 2
-            critical = chi2.ppf(1 - self.iswt_cfg.alpha, df=dof)
+            critical = self.iswt_cfg.critical_value(N)
             
             # Penalize CUSUM of attacked sensors + ISWT globally
             cusum_penalty = torch.mean(G[:, compromised_idx]) / self.cusum_cfg.h
@@ -346,11 +345,10 @@ class TargetedConsistencyAttack:
             h=self.cusum_cfg.h,
             n_sensors=N,
             alpha=self.iswt_cfg.alpha,
+            custom_critical=self.iswt_cfg.critical_value(N)
         )
 
-        from scipy.stats import chi2
-        dof = N * (N + 1) / 2
-        critical = chi2.ppf(1 - self.iswt_cfg.alpha, df=dof)
+        critical = self.iswt_cfg.critical_value(N)
 
         cusum_pen = np.mean(cusum_results['G'][:, compromised_idx]) / self.cusum_cfg.h
         iswt_pen = np.mean(self.iswt_cfg.W * iswt_results['test_stat']) / critical
