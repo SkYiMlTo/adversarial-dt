@@ -252,4 +252,4 @@ class ExperimentConfig:
     seed: int = 42
 
     # --- Parallelization ---
-    n_workers: int = 4  # Parallel sessions
+    n_workers: int = 10  # Parallel sessions

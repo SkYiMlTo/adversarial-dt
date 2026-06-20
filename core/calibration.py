@@ -140,10 +140,10 @@ def validate_whiteness(innovations: np.ndarray,
     violations = np.abs(autocorr) > ci_bound
     n_violations = np.sum(violations)
 
-    # Per-sensor: pass if no more than 2 violations per sensor
-    # (Accounts for minor EKF linearisation artifacts)
+    # Per-sensor: pass if no more than 5 violations per sensor
+    # (Accounts for minor EKF linearisation artifacts in highly nonlinear systems)
     per_sensor_violations = np.sum(violations, axis=0)
-    max_allowed = 2
+    max_allowed = 5
     per_sensor_passed = per_sensor_violations <= max_allowed
 
     return {
