@@ -58,7 +58,8 @@ class TargetedConsistencyAttack:
                      U: np.ndarray,
                      attacked_idx: List[int],
                      compromised_idx: List[int],
-                     epsilon: float,
+                     epsilon: np.ndarray,
+                     iswt_weight: float = 2.0,
                      fault_vector: Optional[np.ndarray] = None,
                      verbose: bool = False) -> dict:
         """White-box TCA using PyTorch automatic differentiation.
@@ -72,7 +73,7 @@ class TargetedConsistencyAttack:
             U: (T, 2) control input matrix.
             attacked_idx: Sensor indices the adversary can perturb (A).
             compromised_idx: Sensor indices with physical fault (B ⊆ A).
-            epsilon: Perturbation budget ‖δ‖_∞ ≤ ε (absolute units).
+            epsilon: (N,) array Perturbation budget ‖δ_i‖_∞ ≤ ε_i (absolute units).
             fault_vector: (T, N) fault added to measurements. If None,
                           assumes fault is already in Y.
             verbose: Print progress.
@@ -98,6 +99,9 @@ class TargetedConsistencyAttack:
 
         # Initialize perturbation (requires_grad for autodiff)
         delta = torch.zeros(T, N, dtype=torch.float64, requires_grad=True)
+        
+        # Convert epsilon to tensor for broadcasting
+        eps_t = torch.tensor(epsilon, dtype=torch.float64, device=Y_t.device).unsqueeze(0)
 
         # Create attack mask (only attacked sensors can be perturbed)
         mask = torch.zeros(N, dtype=torch.float64)
@@ -146,11 +150,11 @@ class TargetedConsistencyAttack:
             # Maximize this: keep CUSUM low, keep ISWT low.
             critical = self.iswt_cfg.critical_value(N)
             
-            # Penalize CUSUM of attacked sensors + ISWT globally
-            cusum_penalty = torch.mean(G[:, compromised_idx]) / self.cusum_cfg.h
+            # Penalize maximum CUSUM across all sensors + ISWT globally
+            cusum_penalty = torch.mean(torch.max(G, dim=1)[0]) / self.cusum_cfg.h
             iswt_penalty = torch.mean(self.iswt_cfg.W * lambda_iw) / critical
             
-            surrogate_loss = -(cusum_penalty + 2.0 * iswt_penalty)
+            surrogate_loss = -(cusum_penalty + iswt_weight * iswt_penalty)
 
             surrogate_scalar = surrogate_loss.item()
             surr_history.append(surrogate_scalar)
@@ -178,13 +182,11 @@ class TargetedConsistencyAttack:
                 for _ in range(10):
                     delta_candidate = delta + eta * grad
                     delta_candidate = delta_candidate * mask.unsqueeze(0)
-                    delta_candidate = torch.clamp(delta_candidate,
-                                                   -epsilon, epsilon)
+                    delta_candidate = torch.max(torch.min(delta_candidate, eps_t), -eps_t)
                     # Simple step without full Armijo check for efficiency
                     break
 
-                delta_new = torch.clamp(delta + eta * grad,
-                                         -epsilon, epsilon)
+                delta_new = torch.max(torch.min(delta + eta * grad, eps_t), -eps_t)
                 delta_new = delta_new * mask.unsqueeze(0)
 
                 # Update (create new tensor with requires_grad)
@@ -210,7 +212,8 @@ class TargetedConsistencyAttack:
                     U: np.ndarray,
                     attacked_idx: List[int],
                     compromised_idx: List[int],
-                    epsilon: float,
+                    epsilon: np.ndarray,
+                    iswt_weight: float = 2.0,
                     verbose: bool = False) -> dict:
         """Grey-box TCA using finite difference gradient estimation.
 
@@ -235,6 +238,12 @@ class TargetedConsistencyAttack:
         T, N = Y.shape
         cfg = self.tca_cfg
 
+        # Convert epsilon to array
+        if isinstance(epsilon, (float, int)):
+            epsilon_vec = np.full(N, float(epsilon))
+        else:
+            epsilon_vec = np.asarray(epsilon)
+
         # Initialize perturbation
         delta = np.zeros((T, N))
         sds_history = []
@@ -242,9 +251,13 @@ class TargetedConsistencyAttack:
         best_delta = None
         best_sds = -1.0
 
+        # Create helper bound to iswt_weight
+        def _surrogate(delta_eval):
+            return self._evaluate_surrogate(Y, U, delta_eval, compromised_idx, iswt_weight)
+
         for k in range(cfg.K):
             # Evaluate current SDS and surrogate
-            sds_base, surr_base = self._evaluate_surrogate(Y, U, delta, compromised_idx)
+            sds_base, surr_base = _surrogate(delta)
             sds_history.append(sds_base)
             surr_history.append(surr_base)
 
@@ -264,17 +277,15 @@ class TargetedConsistencyAttack:
                 delta_plus = delta.copy()
                 delta_plus[:, i] += h_fd
                 delta_plus[:, i] = np.clip(delta_plus[:, i],
-                                            -epsilon, epsilon)
-                _, surr_plus = self._evaluate_surrogate(Y, U, delta_plus,
-                                              compromised_idx)
+                                            -epsilon_vec[i], epsilon_vec[i])
+                _, surr_plus = _surrogate(delta_plus)
 
                 # Negative perturbation
                 delta_minus = delta.copy()
                 delta_minus[:, i] -= h_fd
                 delta_minus[:, i] = np.clip(delta_minus[:, i],
-                                             -epsilon, epsilon)
-                _, surr_minus = self._evaluate_surrogate(Y, U, delta_minus,
-                                               compromised_idx)
+                                             -epsilon_vec[i], epsilon_vec[i])
+                _, surr_minus = _surrogate(delta_minus)
 
                 # Central difference on surrogate
                 grad[:, i] = (surr_plus - surr_minus) / (2 * h_fd)
@@ -283,7 +294,7 @@ class TargetedConsistencyAttack:
             delta = delta + cfg.eta * grad
 
             # L∞ projection
-            delta = np.clip(delta, -epsilon, epsilon)
+            delta = np.clip(delta, -epsilon_vec, epsilon_vec)
 
             # Zero non-attacked sensors
             mask = np.zeros(N)
@@ -306,7 +317,8 @@ class TargetedConsistencyAttack:
 
     def _evaluate_surrogate(self, Y: np.ndarray, U: np.ndarray,
                       delta: np.ndarray,
-                      compromised_idx: List[int]) -> tuple:
+                      compromised_idx: List[int],
+                      iswt_weight: float = 2.0) -> tuple:
         """Evaluate true SDS and surrogate loss for a given perturbation.
 
         Runs the full pipeline: EKF → CUSUM → ISWT → SDS/Surrogate.
@@ -350,9 +362,13 @@ class TargetedConsistencyAttack:
 
         critical = self.iswt_cfg.critical_value(N)
 
-        cusum_pen = np.mean(cusum_results['G'][:, compromised_idx]) / self.cusum_cfg.h
-        iswt_pen = np.mean(self.iswt_cfg.W * iswt_results['test_stat']) / critical
-        surrogate = -(cusum_pen + 2.0 * iswt_pen)
+        # Surrogate loss components
+        # Penalize maximum CUSUM across all sensors
+        cusum_pen = np.mean(np.max(cusum_results['G'], axis=1)) / self.cusum_cfg.h
+        
+        # ISWT test_stat is ALREADY W * lambda_iw
+        iswt_pen = np.mean(iswt_results['test_stat']) / critical
+        surrogate = -(cusum_pen + iswt_weight * iswt_pen)
 
         return sds_results['sds_mean'], surrogate
 
@@ -383,7 +399,7 @@ class TargetedConsistencyAttack:
         sigma_ref = np.mean(self.sys.sigma[compromised_idx])
 
         for ratio in self.tca_cfg.epsilon_ratios:
-            epsilon = ratio * sigma_ref
+            epsilon = ratio * self.sys.sigma
             if verbose:
                 print(f"\n=== Budget ε/σ_η = {ratio:.2f} "
                       f"(ε = {epsilon:.6f}) ===")

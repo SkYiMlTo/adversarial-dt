@@ -29,7 +29,7 @@ from core.tca import TargetedConsistencyAttack
 from core.calibration import calibrate_ekf, validate_whiteness
 
 RESULTS_DIR = Path(__file__).resolve().parent.parent / "results" / "s2"
-SWAT_DIR = Path(__file__).resolve().parent.parent / "swat" / "data"
+SWAT_DIR = Path(__file__).resolve().parent.parent / "swat" / "dataset"
 
 
 def load_or_generate_data(config: ExperimentConfig) -> dict:
@@ -47,7 +47,17 @@ def load_or_generate_data(config: ExperimentConfig) -> dict:
         train = load_swat_dataset(str(SWAT_DIR), mode='normal')
         test = load_swat_dataset(str(SWAT_DIR), mode='attack')
         print("  Using real SWaT dataset")
-        return {'train': train, 'test': test, 'source': 'swat'}
+        from core.calibration import calibrate_ekf
+        from core.config import EKFConfig, ISWTConfig
+
+        sys_cfg = config.system
+        Q_hat, R = calibrate_ekf(train['Y'], train['U'], sys_cfg)
+        ekf_cfg = EKFConfig(Q_diag=np.diag(Q_hat))
+        iswt_cfg = ISWTConfig()
+
+        return {'train': train, 'test': test, 'source': 'swat',
+                'ekf_config': ekf_cfg, 'iswt_config': iswt_cfg,
+                'Q': Q_hat, 'R': R}
     except (FileNotFoundError, ImportError) as e:
         print(f"  SWaT dataset not available ({e})")
         print("  Generating synthetic SWaT-equivalent data")

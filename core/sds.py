@@ -5,7 +5,7 @@ Implements the SDS from Sec. 4.2 (Eqs. 9–11):
 
     φ_i(δ) = max(0, 1 - G_i(t;δ) / h)     ∈ [0,1]   CUSUM evasion    [Eq. 9]
     ψ(δ)   = max(0, 1 - W·Λ^IW(t;δ) / χ²)  ∈ [0,1]   Whiteness pres.  [Eq. 10]
-    SDS(δ) = ψ(δ) · (1/|B|) Σ_{i∈B} φ_i(δ)  ∈ [0,1]                   [Eq. 11]
+    SDS(δ) = ψ(δ) · min_i φ_i(δ)           ∈ [0,1]                   [Eq. 11]
 
 Properties:
     - SDS = 1  ⟺  all CUSUM at 0 AND innovation covariance = I_N
@@ -56,7 +56,7 @@ def compute_sds(G: np.ndarray, test_stat: float,
                 custom_critical: Optional[float] = None) -> dict:
     """Compute the Sensor Deception Score (Eq. 11).
 
-    SDS = ψ · (1/|B|) Σ_{i∈B} φ_i
+    SDS = ψ · min_i φ_i
 
     Args:
         G: Per-sensor CUSUM statistics, shape (N,).
@@ -84,22 +84,19 @@ def compute_sds(G: np.ndarray, test_stat: float,
     # CUSUM evasion per sensor
     phi = compute_phi(G, h)
 
-    # Average over compromised sensors
-    if len(compromised_idx) > 0:
-        phi_mean = np.mean(phi[compromised_idx])
-    else:
-        phi_mean = 1.0
+    # Evasion fails if ANY sensor alarms
+    phi_min = np.min(phi)
 
     # Whiteness preservation
     psi = compute_psi(test_stat, critical)
 
-    # SDS = ψ · mean(φ_i for i ∈ B)
-    sds = psi * phi_mean
+    # SDS = ψ · min(φ_i)
+    sds = psi * phi_min
 
     return {
         'sds': sds,
         'phi': phi,
-        'phi_mean': phi_mean,
+        'phi_mean': phi_min,  # Kept as phi_mean key for compatibility
         'psi': psi,
         'critical': critical,
     }
@@ -178,15 +175,14 @@ def sds_torch(G, lambda_iw, compromised_idx, h=5.0,
     # φ_i = clamp(1 - G_i/h, min=0)
     phi = torch.clamp(1.0 - G / h, min=0.0)  # (T, N)
 
-    # Average over compromised sensors
-    phi_compromised = phi[:, compromised_idx]  # (T, |B|)
-    phi_mean = phi_compromised.mean(dim=1)     # (T,)
+    # Evasion fails if ANY sensor alarms
+    phi_min = phi.min(dim=1)[0]                # (T,)
 
     # ψ = clamp(1 - W·Λ^IW / χ², min=0)
     psi = torch.clamp(1.0 - W * lambda_iw / critical, min=0.0)  # (T,)
 
-    # SDS = ψ · mean(φ)
-    sds = psi * phi_mean  # (T,)
+    # SDS = ψ · min(φ)
+    sds = psi * phi_min  # (T,)
 
     # Mean SDS over time (optimization objective)
     # Skip the first W steps where ISWT is not yet ready

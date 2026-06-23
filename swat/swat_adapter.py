@@ -168,7 +168,7 @@ def load_swat_dataset(data_dir: str,
     timestamps = None
     for ts_col in ['Timestamp', 'timestamp', 'Time', 'time']:
         if ts_col in df.columns:
-            timestamps = pd.to_datetime(df[ts_col])
+            timestamps = pd.to_datetime(df[ts_col].astype(str).str.strip(), format='mixed', dayfirst=True)
             break
 
     return {

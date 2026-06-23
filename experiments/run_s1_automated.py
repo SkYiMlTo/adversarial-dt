@@ -105,7 +105,7 @@ def run_single_session(session_id: int,
     U = sim['u']
 
     # --- Step 3: Run TCA ---
-    epsilon = epsilon_ratio * sys_cfg.sigma[attack_sensor]
+    epsilon = epsilon_ratio * sys_cfg.sigma
     tca = TargetedConsistencyAttack(
             sys_cfg, ekf_cfg, config.cusum, iswt_cfg, config.tca
         )
@@ -145,10 +145,10 @@ def run_single_session(session_id: int,
     cusum_any_alarm = np.any(cusum_results['alarm'], axis=1)
     combined_alarms = cusum_any_alarm | iswt_results['alarm']
 
-    # CUSUM-only evasion
-    cusum_evasion = _check_evasion(cusum_any_alarm, evasion_window)
-    # Combined evasion
-    combined_evasion = _check_evasion(combined_alarms, evasion_window)
+    # CUSUM-only evasion (ignore startup transient)
+    cusum_evasion = _check_evasion(cusum_any_alarm[iswt_cfg.W:], evasion_window)
+    # Combined evasion (ignore startup transient)
+    combined_evasion = _check_evasion(combined_alarms[iswt_cfg.W:], evasion_window)
 
     # TPR/FPR computation
     # True positives: alarm during fault period
@@ -286,7 +286,7 @@ def run_table3(config: ExperimentConfig) -> dict:
     for regime in ['whitebox', 'greybox']:
         print(f"\n--- {regime} ---")
         for ratio in config.tca.epsilon_ratios:
-            epsilon = ratio * config.system.sigma[5]
+            epsilon = ratio * config.system.sigma
             print(f"  ε/σ_η = {ratio:.2f} ...", end=" ", flush=True)
 
             try:
@@ -319,7 +319,7 @@ def run_table5(config: ExperimentConfig) -> dict:
     print("=" * 70)
 
     fault_mult = 2.0
-    epsilon_ratio = 0.75
+    epsilon_ratio = 1.50
 
     # Generate data and run TCA
     process = TwoTankProcess(config.system)
@@ -345,11 +345,11 @@ def run_table5(config: ExperimentConfig) -> dict:
     tca = TargetedConsistencyAttack(
         config.system, ekf_cfg, config.cusum, iswt_cfg, config.tca
     )
-    epsilon = epsilon_ratio * config.system.sigma[5]
+    epsilon = epsilon_ratio * config.system.sigma
 
     try:
         tca_result = tca.run_whitebox(
-            Y, U, list(range(6)), [5], epsilon, verbose=True
+            Y, U, [5], [5], epsilon, iswt_weight=0.0, verbose=True
         )
         delta = tca_result['delta']
     except Exception:
@@ -430,14 +430,14 @@ def main():
     t_start = time.time()
 
     # Table 1
-    t1 = run_table1(config)
-    with open(RESULTS_DIR / "table1_evasion.json", 'w') as f:
-        json.dump({str(k): v for k, v in t1.items()}, f, indent=2)
+    # t1 = run_table1(config)
+    # with open(RESULTS_DIR / "table1_evasion.json", 'w') as f:
+    #     json.dump({str(k): v for k, v in t1.items()}, f, indent=2)
 
     # Table 3
-    t3 = run_table3(config)
-    with open(RESULTS_DIR / "table3_budget_sweep.json", 'w') as f:
-        json.dump({str(k): v for k, v in t3.items()}, f, indent=2)
+    # t3 = run_table3(config)
+    # with open(RESULTS_DIR / "table3_budget_sweep.json", 'w') as f:
+    #     json.dump({str(k): v for k, v in t3.items()}, f, indent=2)
 
     # Table 5
     t5 = run_table5(config)
