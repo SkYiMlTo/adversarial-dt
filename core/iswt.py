@@ -188,6 +188,24 @@ def combined_alarm(cusum_alarm: np.ndarray, iswt_alarm: bool) -> bool:
     return bool(np.any(cusum_alarm) or iswt_alarm)
 
 
+def combined_alarm_full(cusum_alarm: np.ndarray,
+                        iswt_alarm: bool,
+                        lstm_alarm: bool = False) -> bool:
+    """Extended combined alarm including neural LSTM detector (Eq. 13+).
+
+    a(t) = 1[max_i G_i(t) > h] ∨ a^IWD(t) ∨ a^LSTM(t)
+
+    Args:
+        cusum_alarm: Per-sensor CUSUM alarm flags.
+        iswt_alarm: ISWT alarm flag.
+        lstm_alarm: LSTM detector alarm flag.
+
+    Returns:
+        True if any alarm is triggered.
+    """
+    return bool(np.any(cusum_alarm) or iswt_alarm or lstm_alarm)
+
+
 # ======================================================================
 # PyTorch-differentiable ISWT (for TCA)
 # ======================================================================

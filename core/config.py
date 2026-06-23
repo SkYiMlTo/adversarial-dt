@@ -228,6 +228,57 @@ class TCAConfig:
 
 
 @dataclass
+class LSTMDetectorConfig:
+    """LSTM autoencoder anomaly detector parameters.
+
+    The LSTM autoencoder learns the nominal distribution of the EKF
+    standardized innovation sequence ν̂(t). Anomalies are detected when
+    the reconstruction error exceeds a threshold calibrated from clean
+    operational data.
+
+    Architecture:  Encoder LSTM → Latent → Decoder LSTM → Reconstruction
+    Input:         Sliding windows of ν̂(t) ∈ R^N over seq_len timesteps
+    Output:        Reconstruction error (MSE per window)
+    """
+    hidden_dim: int = 32            # LSTM hidden state dimension
+    n_layers: int = 2               # Number of stacked LSTM layers
+    seq_len: int = 50               # Input sequence length (lookback window)
+    latent_dim: int = 16            # Bottleneck dimension
+    threshold_percentile: float = 99.0  # Anomaly threshold from clean data
+    learning_rate: float = 1e-3     # Adam learning rate
+    n_epochs: int = 100             # Training epochs
+    batch_size: int = 32            # Mini-batch size
+    dropout: float = 0.1           # Dropout rate between LSTM layers
+
+
+@dataclass
+class GANConfig:
+    """Conditional GAN evasion generator parameters.
+
+    The generator G(z, c) produces perturbation sequences δ(t) ∈ [-ε, ε]^N
+    conditioned on the attack context c = [ε, fault_magnitude, operating_point].
+
+    The discriminator wraps the full detection pipeline (EKF → CUSUM →
+    ISWT → LSTM) as a differentiable function and outputs the probability
+    that the perturbed innovation sequence appears "clean."
+
+    Architecture:
+        Generator:      MLP → LSTM → Linear → tanh × ε
+        Discriminator:  DifferentiableEKF → Pipeline stats → MLP → sigmoid
+    """
+    latent_dim: int = 32            # Generator noise input dimension
+    hidden_dim: int = 64            # Hidden layer dimension
+    n_layers: int = 3               # Generator/discriminator depth
+    seq_len: int = 50               # Generated sequence length
+    learning_rate_g: float = 2e-4   # Generator learning rate (Adam)
+    learning_rate_d: float = 2e-4   # Discriminator learning rate (Adam)
+    n_epochs: int = 200             # Training epochs
+    batch_size: int = 32            # Mini-batch size
+    lambda_physics: float = 10.0    # Weight for physics-consistency loss
+    lambda_budget: float = 5.0      # Weight for ε-budget constraint loss
+
+
+@dataclass
 class ExperimentConfig:
     """Top-level experiment configuration."""
     system: SystemConfig = field(default_factory=SystemConfig)
@@ -235,6 +286,8 @@ class ExperimentConfig:
     cusum: CUSUMConfig = field(default_factory=CUSUMConfig)
     iswt: ISWTConfig = field(default_factory=ISWTConfig)
     tca: TCAConfig = field(default_factory=TCAConfig)
+    lstm: LSTMDetectorConfig = field(default_factory=LSTMDetectorConfig)
+    gan: GANConfig = field(default_factory=GANConfig)
 
     # --- S1 red-team protocol ---
     s1_sessions_per_config: int = 30       # Sessions per (regime, fault_mag)
@@ -247,6 +300,11 @@ class ExperimentConfig:
     # --- S2 SWaT ---
     s2_train_steps: int = 72000
     s2_n_attack_sensors: int = 4  # |A| = 4 sensors per stage
+
+    # --- S3 Neural attack/defense ---
+    s3_lstm_train_steps: int = 3600        # 60 min at 1 Hz for LSTM training
+    s3_gan_train_sessions: int = 50        # Operating conditions for GAN training
+    s3_sessions_per_config: int = 20       # Evaluation sessions per config
 
     # --- Random seed ---
     seed: int = 42

@@ -25,11 +25,18 @@ sys.path.insert(0, '/app')
 from influxdb_client import InfluxDBClient, Point, WritePrecision
 from influxdb_client.client.write_api import SYNCHRONOUS
 
-from core.config import SystemConfig, EKFConfig, CUSUMConfig, ISWTConfig
+from core.config import SystemConfig, EKFConfig, CUSUMConfig, ISWTConfig, LSTMDetectorConfig
 from core.ekf import ExtendedKalmanFilter
 from core.cusum import CUSUMDetector
-from core.iswt import ISWTDetector, combined_alarm
+from core.iswt import ISWTDetector, combined_alarm, combined_alarm_full
 from core.calibration import calibrate_ekf, validate_whiteness
+
+try:
+    from core.lstm_detector import LSTMDetector
+    import torch
+    HAS_NEURAL = True
+except ImportError:
+    HAS_NEURAL = False
 
 logging.basicConfig(level=os.getenv('LOG_LEVEL', 'INFO'),
                     format='%(asctime)s [DT] %(levelname)s %(message)s')

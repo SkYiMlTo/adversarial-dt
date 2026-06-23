@@ -12,15 +12,27 @@ Components:
     - cusum: Per-sensor CUSUM sequential detector
     - iswt: Innovation Spatial Whiteness Test (Stein divergence)
     - sds: Sensor Deception Score metric
-    - tca: Targeted Consistency Attack (white-box + grey-box)
+    - tca: Targeted Consistency Attack (white-box + grey-box + neural)
     - calibration: EKF calibration and whiteness validation
+    - lstm_detector: LSTM autoencoder anomaly detector (neural defense)
+    - gan_evasion: Conditional GAN evasion generator (neural attack)
 """
 
-from .config import SystemConfig, EKFConfig, TCAConfig, ExperimentConfig
+from .config import (SystemConfig, EKFConfig, TCAConfig, ExperimentConfig,
+                     LSTMDetectorConfig, GANConfig)
 from .process_model import TwoTankProcess
 from .ekf import ExtendedKalmanFilter
 from .cusum import CUSUMDetector
-from .iswt import ISWTDetector
+from .iswt import ISWTDetector, combined_alarm_full
 from .sds import compute_sds, compute_phi, compute_psi
 from .tca import TargetedConsistencyAttack
 from .calibration import calibrate_ekf, validate_whiteness
+
+# Neural components require PyTorch — import conditionally
+try:
+    from .lstm_detector import LSTMAutoencoder, LSTMDetector
+    from .gan_evasion import EvasionGenerator, GANTrainer, train_evasion_gan
+except ImportError:
+    pass  # torch not installed; neural components unavailable
+
+

@@ -204,6 +204,182 @@ class TargetedConsistencyAttack:
         }
 
     # ------------------------------------------------------------------
+    # White-box TCA with neural defense (PGD on CUSUM + ISWT + LSTM)
+    # ------------------------------------------------------------------
+
+    def run_whitebox_neural(self,
+                            Y: np.ndarray,
+                            U: np.ndarray,
+                            attacked_idx: List[int],
+                            compromised_idx: List[int],
+                            epsilon: np.ndarray,
+                            lstm_model,
+                            lstm_config=None,
+                            iswt_weight: float = 2.0,
+                            lstm_weight: float = 1.0,
+                            verbose: bool = False) -> dict:
+        """White-box TCA evading CUSUM + ISWT + LSTM simultaneously.
+
+        Extends run_whitebox() by adding the LSTM reconstruction error
+        to the surrogate loss function. Gradients flow through both
+        the differentiable EKF and the LSTM autoencoder.
+
+        The surrogate loss becomes:
+            L = -(cusum_penalty + λ_iswt · iswt_penalty + λ_lstm · lstm_penalty)
+
+        where lstm_penalty = mean(recon_error) / threshold.
+
+        Args:
+            Y: (T, N) raw measurement matrix.
+            U: (T, 2) control input matrix.
+            attacked_idx: Sensor indices the adversary can perturb.
+            compromised_idx: Sensor indices with physical fault.
+            epsilon: (N,) perturbation budget.
+            lstm_model: Trained LSTMAutoencoder (nn.Module).
+            lstm_config: LSTMDetectorConfig (for seq_len).
+            iswt_weight: Weight for ISWT penalty.
+            lstm_weight: Weight for LSTM penalty.
+            verbose: Print progress.
+
+        Returns:
+            Dictionary with 'delta', 'sds_history', 'surr_history',
+            'sds_final', 'lstm_score_history'.
+        """
+        import torch
+        from .ekf import DifferentiableEKF
+        from .cusum import cusum_torch
+        from .iswt import iswt_torch
+        from .sds import sds_torch
+        from .lstm_detector import lstm_anomaly_torch
+        from .config import LSTMDetectorConfig
+
+        T, N = Y.shape
+        cfg = self.tca_cfg
+        lstm_cfg = lstm_config or LSTMDetectorConfig()
+
+        # Convert to tensors
+        Y_t = torch.tensor(Y, dtype=torch.float64)
+        U_t = torch.tensor(U, dtype=torch.float64)
+
+        # Initialize perturbation
+        delta = torch.zeros(T, N, dtype=torch.float64, requires_grad=True)
+
+        # Budget tensor
+        eps_t = torch.tensor(epsilon, dtype=torch.float64).unsqueeze(0)
+
+        # Attack mask
+        mask = torch.zeros(N, dtype=torch.float64)
+        mask[attacked_idx] = 1.0
+
+        # Differentiable EKF
+        diff_ekf = DifferentiableEKF(self.sys, self.ekf_cfg)
+
+        # LSTM model in eval mode (but with gradient flow)
+        lstm_model_f64 = _cast_lstm_to_float64(lstm_model)
+        lstm_model_f64.eval()
+
+        # Get LSTM threshold from training data (fallback: 0.01)
+        lstm_threshold = getattr(lstm_model, '_threshold', 0.01)
+
+        sds_history = []
+        surr_history = []
+        lstm_score_history = []
+        best_delta = None
+        best_sds = -1.0
+
+        for k in range(cfg.K):
+            if delta.grad is not None:
+                delta.grad.zero_()
+
+            delta_masked = delta * mask.unsqueeze(0)
+
+            # EKF forward pass
+            ekf_out = diff_ekf.forward_pass(Y_t, U_t, delta=delta_masked)
+
+            # CUSUM
+            G = cusum_torch(ekf_out['std_innovations'],
+                            k=self.cusum_cfg.k, h=self.cusum_cfg.h)
+
+            # ISWT
+            lambda_iw = iswt_torch(ekf_out['std_innovations'],
+                                   W=self.iswt_cfg.W,
+                                   alpha=self.iswt_cfg.alpha,
+                                   n_sensors=N)
+
+            # LSTM anomaly scores (differentiable)
+            lstm_scores = lstm_anomaly_torch(
+                lstm_model_f64,
+                ekf_out['std_innovations'],
+                seq_len=lstm_cfg.seq_len)
+
+            # True SDS (for tracking)
+            with torch.no_grad():
+                sds_val = sds_torch(G, lambda_iw, compromised_idx,
+                                    h=self.cusum_cfg.h,
+                                    n_sensors=N,
+                                    alpha=self.iswt_cfg.alpha,
+                                    W=self.iswt_cfg.W,
+                                    custom_critical=self.iswt_cfg.critical_value(N))
+                sds_scalar = sds_val.item()
+                lstm_mean_score = lstm_scores[lstm_cfg.seq_len:].mean().item() \
+                    if T > lstm_cfg.seq_len else 0.0
+
+            # Surrogate loss: CUSUM + ISWT + LSTM
+            critical = self.iswt_cfg.critical_value(N)
+            cusum_penalty = torch.mean(torch.max(G, dim=1)[0]) / self.cusum_cfg.h
+            iswt_penalty = torch.mean(self.iswt_cfg.W * lambda_iw) / critical
+
+            # LSTM penalty: keep reconstruction error below threshold
+            valid_lstm = lstm_scores[lstm_cfg.seq_len:]
+            if len(valid_lstm) > 0:
+                lstm_penalty = torch.mean(valid_lstm) / max(lstm_threshold, 1e-8)
+            else:
+                lstm_penalty = torch.tensor(0.0, dtype=torch.float64)
+
+            surrogate_loss = -(cusum_penalty
+                               + iswt_weight * iswt_penalty
+                               + lstm_weight * lstm_penalty)
+
+            surrogate_scalar = surrogate_loss.item()
+            surr_history.append(surrogate_scalar)
+            sds_history.append(sds_scalar)
+            lstm_score_history.append(lstm_mean_score)
+
+            if sds_scalar > best_sds:
+                best_sds = sds_scalar
+                best_delta = delta.detach().clone()
+
+            if verbose and (k % 10 == 0 or k == cfg.K - 1):
+                print(f"  TCA-Neural iter {k:3d}/{cfg.K}: "
+                      f"SDS={sds_scalar:.4f}, Surr={surrogate_scalar:.4f}, "
+                      f"LSTM={lstm_mean_score:.6f}")
+
+            # Backward
+            surrogate_loss.backward()
+
+            if delta.grad is None:
+                break
+
+            # Projected gradient ascent
+            with torch.no_grad():
+                grad = delta.grad.clone()
+                delta_new = delta + cfg.eta * grad
+                delta_new = delta_new * mask.unsqueeze(0)
+                delta_new = torch.max(torch.min(delta_new, eps_t), -eps_t)
+                delta = delta_new.detach().requires_grad_(True)
+
+        if best_delta is None:
+            best_delta = delta.detach()
+
+        return {
+            'delta': best_delta.numpy(),
+            'sds_history': sds_history,
+            'surr_history': surr_history,
+            'sds_final': best_sds,
+            'lstm_score_history': lstm_score_history,
+        }
+
+    # ------------------------------------------------------------------
     # Grey-box TCA (finite differences)
     # ------------------------------------------------------------------
 
@@ -416,3 +592,27 @@ class TargetedConsistencyAttack:
             results[ratio] = result
 
         return results
+
+
+# ======================================================================
+# Helper: cast LSTM model to float64 for EKF compatibility
+# ======================================================================
+
+def _cast_lstm_to_float64(model):
+    """Cast an LSTM model's parameters to float64.
+
+    The differentiable EKF operates in float64 for numerical precision.
+    The LSTM (trained in float32) must be cast to match dtypes for
+    gradient flow through the combined EKF → LSTM pipeline.
+
+    Args:
+        model: LSTMAutoencoder (nn.Module) in float32.
+
+    Returns:
+        model_f64: Same model with all parameters in float64.
+    """
+    import copy
+    model_f64 = copy.deepcopy(model)
+    model_f64 = model_f64.double()
+    return model_f64
+

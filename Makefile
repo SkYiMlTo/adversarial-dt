@@ -30,13 +30,16 @@ run-s2: ## Run S2 SWaT offline evaluation (Tables 2, 4)
 	@echo "python3 experiments/run_s2_offline.py"
 	python3 experiments/run_s2_offline.py
 
+run-s3: ## Run S3 neural attack/defense evaluation (Tables 6, 7, 8)
+	python3 experiments/run_s3_neural.py
+
 figures: ## Generate publication figures
 	python3 experiments/generate_figures.py
 
 results: ## Collect results as LaTeX tables
 	python3 experiments/collect_results.py
 
-run-all: run-s1 run-s2 figures results ## Run all experiments and generate outputs
+run-all: run-s1 run-s2 run-s3 figures results ## Run all experiments and generate outputs
 
 # ---------------------------------------------------------------------------
 # Testing
@@ -56,6 +59,12 @@ test-iswt: ## Test ISWT detector
 
 test-tca: ## Test TCA attack
 	python3 -m pytest tests/test_tca.py -v
+
+test-lstm: ## Test LSTM detector
+	python3 -m pytest tests/test_lstm.py -v
+
+test-gan: ## Test GAN evasion generator
+	python3 -m pytest tests/test_gan.py -v
 
 # ---------------------------------------------------------------------------
 # Utilities

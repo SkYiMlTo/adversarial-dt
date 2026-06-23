@@ -53,15 +53,18 @@ The mathematical heart of the paper.
 - `ekf.py`: Extended Kalman Filter (EKF) that tracks the state of the physical system. Includes a specialized PyTorch-differentiable EKF for the attacker.
 - `cusum.py`: The standard CUSUM anomaly detector (which the attacker tries to evade).
 - `iswt.py`: **Our Novel Defense**. The Innovation Spatial Whiteness Test, utilizing Stein divergence and empirical thresholding.
-- `tca.py`: The Targeted Consistency Attack. Uses PyTorch's Projected Gradient Descent (PGD) to optimize a highly sophisticated surrogate loss function to evade detection.
+- `tca.py`: The Targeted Consistency Attack. Uses PyTorch's Projected Gradient Descent (PGD) to optimize a highly sophisticated surrogate loss function to evade detection. Includes `run_whitebox_neural()` for evading the combined CUSUM+ISWT+LSTM pipeline.
 - `sds.py`: The Sensor Deception Score (SDS) metric that quantifies how successfully the attacker tricked the system.
 - `calibration.py`: Pre-session calibration pipeline to baseline the system's nominal noise profile.
+- `lstm_detector.py`: **LSTM Autoencoder Anomaly Detector**. Learns the nominal innovation distribution and detects attacks via reconstruction error. Provides a differentiable interface for adversarial gradient attacks.
+- `gan_evasion.py`: **Conditional GAN Evasion Generator**. Trains a generator G(z,c) to produce stealthy perturbations in a single forward pass, replacing iterative PGD optimization. Includes a physics-informed discriminator wrapping the full detection pipeline.
 
 ### 2. Experiments (`experiments/`)
 Scripts to generate the statistical claims made in the paper.
 - `run_s1_automated.py`: Runs the White-Box and Grey-Box TCA attacks over 30 random sessions across varying perturbation budgets to populate Tables 1, 3, and 5.
 - `run_s2_offline.py`: Validates the defense on the real-world **SWaT (Secure Water Treatment)** dataset (Table 2 and 4). *Note: If the real dataset is missing, it auto-generates a statistically equivalent synthetic version.*
-- `generate_figures.py`: Creates the beautiful, publication-ready PDF plots.
+- `run_s3_neural.py`: **Neural Attack/Defense Evaluation**. Trains an LSTM anomaly detector, mounts adversarial PGD attacks against it, and trains a GAN evasion generator. Produces Tables 6 (detection comparison), 7 (adversarial LSTM), and 8 (GAN vs PGD).
+- `generate_figures.py`: Creates the beautiful, publication-ready PDF plots (including S3 neural figures).
 - `collect_results.py`: Aggregates the JSON outputs into formatted `.tex` tables.
 
 ### 3. Red-Team Emulation (`services/`)
