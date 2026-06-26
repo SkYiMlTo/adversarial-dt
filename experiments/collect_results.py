@@ -33,7 +33,7 @@ def collect_table1():
         r"\begin{table}[t]",
         r"\centering",
         r"\caption{Red-team evasion rate on S1 (fraction of 30 sessions with",
-        r"no alarm during 60 s of active fault).}",
+        r"no alarm during 60\,s of active fault). Budget $\epsilon = 0.6\,\Delta y$.}",
         r"\label{tab:redteam_results}",
         r"\small",
         r"\begin{tabular}{@{}llccc@{}}",
@@ -45,16 +45,18 @@ def collect_table1():
 
     for regime in ['whitebox', 'greybox']:
         regime_label = 'White-box (TCA)' if regime == 'whitebox' else 'Grey-box'
-        for fault in [1.0, 2.0, 4.0]:
+        for fault in [0.5, 1.0, 1.5, 2.0, 3.0, 4.0]:
             key = str((regime, fault))
             if key in data:
                 d = data[key]
                 lines.append(
-                    f"{regime_label:15s} & ${fault:.0f}\\sigma_\\eta$ & "
+                    f"{regime_label:15s} & ${fault:.1f}\\sigma_\\eta$ & "
                     f"{format_pct(d['cusum_evasion_rate'])}\\% & "
                     f"{format_pct(d['combined_evasion_rate'])}\\% & "
                     f"{d['n_sessions']} \\\\"
                 )
+        if regime == 'whitebox':
+            lines.append(r"\midrule")
 
     lines += [r"\bottomrule", r"\end{tabular}", r"\end{table}"]
     return "\n".join(lines)
@@ -73,7 +75,7 @@ def collect_table3():
         r"\begin{table}[t]",
         r"\centering",
         r"\caption{Normalized SDS ($\overline{\mathrm{SDS}}$) versus plausibility",
-        r"budget. S1, $\Delta y = 2\sigma_\eta$, $K = 100$.}",
+        r"budget. S1, $\Delta y = 2\sigma_\eta$, $K = 200$. Mean $\pm$ std over 10 sessions.}",
         r"\label{tab:sds_budget}",
         r"\small",
         r"\begin{tabular}{@{}lcc@{}}",
@@ -87,9 +89,22 @@ def collect_table3():
     for ratio in [0.25, 0.50, 0.75, 1.00, 1.50]:
         wb_key = str(('whitebox', ratio))
         gb_key = str(('greybox', ratio))
-        wb = data.get(wb_key, 0.0)
-        gb = data.get(gb_key, 0.0)
-        lines.append(f"{ratio:.2f} & {wb:.3f} & {gb:.3f} \\\\")
+
+        # Handle both old (scalar) and new (dict) format
+        wb_data = data.get(wb_key, 0.0)
+        gb_data = data.get(gb_key, 0.0)
+
+        if isinstance(wb_data, dict):
+            wb_str = f"{wb_data['mean']:.3f}$\\pm${wb_data['std']:.3f}"
+        else:
+            wb_str = f"{wb_data:.3f}"
+
+        if isinstance(gb_data, dict):
+            gb_str = f"{gb_data['mean']:.3f}$\\pm${gb_data['std']:.3f}"
+        else:
+            gb_str = f"{gb_data:.3f}"
+
+        lines.append(f"{ratio:.2f} & {wb_str} & {gb_str} \\\\")
 
     lines += [r"\bottomrule", r"\end{tabular}", r"\end{table}"]
     return "\n".join(lines)
@@ -108,7 +123,8 @@ def collect_table5():
         r"\begin{table}[t]",
         r"\centering",
         r"\caption{Ablation of detection pipeline components.",
-        r"S1, white-box TCA, $\epsilon = 0.75\,\sigma_\eta$.}",
+        r"S1, white-box TCA (full capability), $\epsilon = 0.75\,\sigma_\eta$.",
+        r"Mean $\pm$ std over 10 sessions.}",
         r"\label{tab:iwd_ablation}",
         r"\small",
         r"\begin{tabular}{@{}lcc@{}}",
@@ -123,9 +139,21 @@ def collect_table5():
         ('combined', r'IWD$\vee$CUSUM (combined)'),
     ]:
         d = data.get(key, {})
-        tpr = format_pct(d.get('tpr', 0))
-        fpr = format_pct(d.get('fpr', 0))
-        lines.append(f"{label} & {tpr}\\% & {fpr}\\% \\\\")
+
+        # Handle both old (no std) and new (with std) format
+        tpr = d.get('tpr', 0)
+        fpr = d.get('fpr', 0)
+        tpr_std = d.get('tpr_std', None)
+        fpr_std = d.get('fpr_std', None)
+
+        if tpr_std is not None:
+            tpr_str = f"{format_pct(tpr)}$\\pm${format_pct(tpr_std)}\\%"
+            fpr_str = f"{format_pct(fpr)}$\\pm${format_pct(fpr_std)}\\%"
+        else:
+            tpr_str = f"{format_pct(tpr)}\\%"
+            fpr_str = f"{format_pct(fpr)}\\%"
+
+        lines.append(f"{label} & {tpr_str} & {fpr_str} \\\\")
 
     lines += [r"\bottomrule", r"\end{tabular}", r"\end{table}"]
     return "\n".join(lines)
@@ -135,7 +163,7 @@ def main():
     TABLES_DIR.mkdir(parents=True, exist_ok=True)
 
     print("=" * 70)
-    print("Collecting Results → LaTeX Tables")
+    print("Collecting Results -> LaTeX Tables")
     print("=" * 70)
 
     tables = {

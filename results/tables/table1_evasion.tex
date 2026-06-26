@@ -1,7 +1,7 @@
 \begin{table}[t]
 \centering
 \caption{Red-team evasion rate on S1 (fraction of 30 sessions with
-no alarm during 60 s of active fault).}
+no alarm during 60\,s of active fault). Budget $\epsilon = 0.6\,\Delta y$.}
 \label{tab:redteam_results}
 \small
 \begin{tabular}{@{}llccc@{}}
@@ -9,12 +9,19 @@ no alarm during 60 s of active fault).}
 \textbf{Adversary} & \textbf{Fault} $\Delta y$ &
 \textbf{CUSUM only} & \textbf{IWD$\vee$CUSUM} & \textbf{Sessions} \\
 \midrule
-White-box (TCA) & $1\sigma_\eta$ & 100.0\% & 100.0\% & 30 \\
-White-box (TCA) & $2\sigma_\eta$ & 0.0\% & 0.0\% & 30 \\
-White-box (TCA) & $4\sigma_\eta$ & 0.0\% & 0.0\% & 30 \\
-Grey-box        & $1\sigma_\eta$ & 100.0\% & 100.0\% & 30 \\
-Grey-box        & $2\sigma_\eta$ & 79.3\% & 79.3\% & 29 \\
-Grey-box        & $4\sigma_\eta$ & 0.0\% & 0.0\% & 30 \\
+White-box (TCA) & $0.5\sigma_\eta$ & 96.7\% & 83.3\% & 30 \\
+White-box (TCA) & $1.0\sigma_\eta$ & 53.3\% & 50.0\% & 30 \\
+White-box (TCA) & $1.5\sigma_\eta$ & 40.0\% & 40.0\% & 30 \\
+White-box (TCA) & $2.0\sigma_\eta$ & 43.3\% & 43.3\% & 30 \\
+White-box (TCA) & $3.0\sigma_\eta$ & 0.0\% & 0.0\% & 30 \\
+White-box (TCA) & $4.0\sigma_\eta$ & 0.0\% & 0.0\% & 30 \\
+\midrule
+Grey-box        & $0.5\sigma_\eta$ & 100.0\% & 100.0\% & 10 \\
+Grey-box        & $1.0\sigma_\eta$ & 100.0\% & 100.0\% & 10 \\
+Grey-box        & $1.5\sigma_\eta$ & 100.0\% & 100.0\% & 9 \\
+Grey-box        & $2.0\sigma_\eta$ & 80.0\% & 70.0\% & 10 \\
+Grey-box        & $3.0\sigma_\eta$ & 10.0\% & 10.0\% & 10 \\
+Grey-box        & $4.0\sigma_\eta$ & 10.0\% & 10.0\% & 10 \\
 \bottomrule
 \end{tabular}
 \end{table}

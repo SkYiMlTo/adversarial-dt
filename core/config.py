@@ -215,8 +215,9 @@ class ISWTConfig:
 @dataclass
 class TCAConfig:
     """Targeted Consistency Attack parameters."""
-    K: int = 100                    # Number of PGD iterations
-    eta: float = 0.003              # Step size (Armijo line-search init)
+    K: int = 200                    # Number of PGD iterations (whitebox)
+    K_greybox: int = 20             # Number of PGD iterations (greybox)
+    eta: float = 0.01               # Step size (Adam base learning rate)
     fd_step: float = 5e-4           # Finite difference step (grey-box)
     armijo_c: float = 1e-4          # Armijo sufficient decrease constant
     armijo_rho: float = 0.5         # Armijo backtracking factor
@@ -294,8 +295,10 @@ class ExperimentConfig:
     s1_session_duration_steps: int = 600   # 10 min at 1 Hz
     s1_evasion_window: int = 60            # 60 consecutive alarm-free steps
     s1_calibration_steps: int = 1800       # 30 min at 1 Hz
-    s1_fault_magnitudes: list = field(default_factory=lambda: [1.0, 2.0, 4.0])
-    # Fault magnitudes in multiples of σ_η
+    s1_fault_magnitudes: list = field(default_factory=lambda: [
+        0.5, 1.0, 1.5, 2.0, 3.0, 4.0
+    ])
+    # Fault magnitudes in multiples of sigma_eta
 
     # --- S2 SWaT ---
     s2_train_steps: int = 72000

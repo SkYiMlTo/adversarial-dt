@@ -1,24 +1,30 @@
 """
 Innovation Spatial Whiteness Test (ISWT) and Innovation Whiteness Detector (IWD).
 
-Implements the ISWT from Eq. 6–8 (Sec. 2.3) and the IWD defense from Sec. 4.4:
+Implements the ISWT from Eq. 6-8 (Sec. 2.3) and the IWD defense from Sec. 4.4:
 
 1. Sample spatial covariance over sliding window W:
-       Ĉ(t) = (1/W) Σ_{s=t-W+1}^{t} ν̂(s)·ν̂(s)^T         [Eq. 5]
+       C_hat(t) = (1/W) sum_{s=t-W+1}^{t} nu_hat(s) * nu_hat(s)^T      [Eq. 5]
 
-2. Stein matrix divergence:
-       Λ^IW(t) = tr(Ĉ) - ln det(Ĉ) - N                    [Eq. 6]
+2. Generalized Stein matrix divergence relative to baseline C_0:
+       Lambda^IW(t) = tr(C_0^{-1} C_hat) - ln det(C_0^{-1} C_hat) - N  [Eq. 6']
+
+   When C_0 = I_N, this reduces to the standard Stein divergence:
+       Lambda^IW(t) = tr(C_hat) - ln det(C_hat) - N                     [Eq. 6]
 
 3. Chi-squared alarm (Bartlett's theorem):
-       alarm(t) = 1[W·Λ^IW(t) > χ²_{1-α}(N(N+1)/2)]       [Eq. 7]
+       alarm(t) = 1[W * Lambda^IW(t) > chi2_{1-alpha}(N(N+1)/2)]       [Eq. 7]
 
-Under H0 (nominal operation), Ĉ → I_N as W → ∞, so Λ^IW → 0.
-Under TCA, the cross-sensor innovation correlations introduced by the
-Kalman gain coupling produce off-diagonal mass in Ĉ, inflating Λ^IW
-above the chi-squared critical value (Proposition 2).
+The use of a baseline covariance C_0 (estimated from clean calibration
+data) accounts for residual EKF linearization artifacts in the
+innovation cross-correlation structure. Under H0, C_hat(t) -> C_0 as
+W -> infinity, so Lambda^IW(t) -> 0. Under attack, the adversarial
+perturbation alters the cross-correlation structure, inflating
+Lambda^IW above the chi-squared critical value.
 
-The IWD's false alarm rate is analytically controlled by α through the
-known chi-squared null distribution — no empirical calibration required.
+This approach is equivalent to whitening the innovations with
+C_0^{-1/2} before applying the standard ISWT, and is the standard
+practice in multivariate change detection (cf. Basseville & Nikiforov).
 """
 
 import numpy as np
@@ -31,26 +37,40 @@ class ISWTDetector:
     """Innovation Spatial Whiteness Test detector.
 
     Monitors the sample spatial covariance of standardized innovations
-    for departures from the identity matrix, using the Stein divergence.
+    for departures from the baseline covariance C_0, using the
+    generalized Stein divergence.
+
+    When no baseline is provided, falls back to the identity matrix
+    (standard ISWT).
     """
 
     def __init__(self, n_sensors: int,
-                 config: Optional[ISWTConfig] = None):
+                 config: Optional[ISWTConfig] = None,
+                 baseline_cov: Optional[np.ndarray] = None):
         """
         Args:
             n_sensors: Number of sensors (N).
-            config: ISWT parameters (W, α).
+            config: ISWT parameters (W, alpha).
+            baseline_cov: (N, N) baseline covariance from clean data.
+                          If None, uses I_N (standard ISWT).
         """
         self.cfg = config or ISWTConfig()
         self.N = n_sensors
 
         # Degrees of freedom: N(N+1)/2
-        # The Stein divergence tests the full covariance matrix
-        # (diagonal + off-diagonal), giving N(N+1)/2 unique entries.
         self.dof = n_sensors * (n_sensors + 1) // 2
 
         # Critical value (supports empirical calibration)
         self.critical = self.cfg.critical_value(n_sensors)
+
+        # Baseline covariance and its inverse
+        if baseline_cov is not None:
+            self.C0 = baseline_cov.copy()
+            self.C0_inv = np.linalg.inv(
+                self.C0 + np.eye(n_sensors) * 1e-10)
+        else:
+            self.C0 = np.eye(n_sensors)
+            self.C0_inv = np.eye(n_sensors)
 
         # Sliding window buffer for standardized innovations
         self.W = self.cfg.W
@@ -61,7 +81,7 @@ class ISWTDetector:
         # Current statistics
         self.C_hat = np.eye(n_sensors)     # Sample covariance
         self.lambda_iw = 0.0               # Stein divergence
-        self.test_stat = 0.0               # W · Λ^IW
+        self.test_stat = 0.0               # W * Lambda^IW
         self.alarm = False
 
     def reset(self):
@@ -78,13 +98,13 @@ class ISWTDetector:
         """Update ISWT with a new standardized innovation vector.
 
         Args:
-            std_innovation: ν̂(t) ∈ R^N (standardized innovation).
+            std_innovation: nu_hat(t) in R^N (standardized innovation).
 
         Returns:
             Dictionary with:
                 - 'C_hat': sample spatial covariance matrix
-                - 'lambda_iw': Stein divergence Λ^IW
-                - 'test_stat': W · Λ^IW
+                - 'lambda_iw': generalized Stein divergence
+                - 'test_stat': W * Lambda^IW
                 - 'critical': chi-squared critical value
                 - 'alarm': True if ISWT alarm is triggered
                 - 'ready': True if buffer is full (enough data)
@@ -106,22 +126,23 @@ class ISWTDetector:
                 'ready': False,
             }
 
-        # Compute sample spatial covariance: Ĉ = (1/W) Σ ν̂·ν̂^T
+        # Compute sample spatial covariance: C_hat = (1/W) sum nu_hat * nu_hat^T
         self.C_hat = (self.buffer.T @ self.buffer) / self.W
 
         # Regularize for numerical stability (ensure positive definite)
         self.C_hat += np.eye(self.N) * 1e-10
 
-        # Stein matrix divergence: Λ^IW = tr(Ĉ) - ln det(Ĉ) - N
-        sign, logdet = np.linalg.slogdet(self.C_hat)
+        # Generalized Stein divergence: D(C_hat || C_0)
+        # = tr(C_0^{-1} C_hat) - ln det(C_0^{-1} C_hat) - N
+        M = self.C0_inv @ self.C_hat
+        sign, logdet = np.linalg.slogdet(M)
         if sign <= 0:
-            # Matrix is not positive definite (numerical issue)
-            # Set a large divergence to trigger alarm
+            # Matrix product is not positive definite
             self.lambda_iw = 1e6
         else:
-            self.lambda_iw = np.trace(self.C_hat) - logdet - self.N
+            self.lambda_iw = np.trace(M) - logdet - self.N
 
-        # Test statistic: W · Λ^IW
+        # Test statistic: W * Lambda^IW
         self.test_stat = self.W * self.lambda_iw
 
         # Alarm decision
@@ -145,7 +166,7 @@ class ISWTDetector:
         Returns:
             Dictionary with arrays indexed by time:
                 - 'lambda_iw': (T,) Stein divergence
-                - 'test_stat': (T,) test statistic W·Λ^IW
+                - 'test_stat': (T,) test statistic W*Lambda^IW
                 - 'alarm': (T,) alarm flags
         """
         self.reset()
@@ -170,13 +191,13 @@ class ISWTDetector:
 
 
 # ======================================================================
-# Combined IWD ∨ CUSUM decision (Eq. 13)
+# Combined IWD | CUSUM decision (Eq. 13)
 # ======================================================================
 
 def combined_alarm(cusum_alarm: np.ndarray, iswt_alarm: bool) -> bool:
-    """Combined IWD∨CUSUM authentication decision (Eq. 13).
+    """Combined IWD|CUSUM authentication decision (Eq. 13).
 
-    a(t) = 1[max_i G_i(t) > h] ∨ a^IWD(t)
+    a(t) = 1[max_i G_i(t) > h] | a^IWD(t)
 
     Args:
         cusum_alarm: Per-sensor CUSUM alarm flags.
@@ -193,7 +214,7 @@ def combined_alarm_full(cusum_alarm: np.ndarray,
                         lstm_alarm: bool = False) -> bool:
     """Extended combined alarm including neural LSTM detector (Eq. 13+).
 
-    a(t) = 1[max_i G_i(t) > h] ∨ a^IWD(t) ∨ a^LSTM(t)
+    a(t) = 1[max_i G_i(t) > h] | a^IWD(t) | a^LSTM(t)
 
     Args:
         cusum_alarm: Per-sensor CUSUM alarm flags.
@@ -210,34 +231,46 @@ def combined_alarm_full(cusum_alarm: np.ndarray,
 # PyTorch-differentiable ISWT (for TCA)
 # ======================================================================
 
-def iswt_torch(std_innovations, W=200, alpha=0.05, n_sensors=6):
+def iswt_torch(std_innovations, W=200, alpha=0.05, n_sensors=6,
+               baseline_cov=None):
     """Differentiable ISWT computation in PyTorch.
 
-    Computes the Stein divergence over a sliding window for gradient flow.
+    Computes the generalized Stein divergence over a sliding window.
+    When baseline_cov is provided, computes D(C_hat || C_0) instead
+    of D(C_hat || I).
 
     Args:
         std_innovations: (T, N) tensor of standardized innovations.
         W: Window size.
         alpha: Significance level.
         n_sensors: Number of sensors.
+        baseline_cov: (N, N) numpy array baseline covariance.
 
     Returns:
-        lambda_iw: (T,) tensor of Stein divergence values.
-        test_stat: (T,) tensor of W·Λ^IW values.
+        lambda_iw: (T,) tensor of generalized Stein divergence values.
     """
     import torch
 
     T, N = std_innovations.shape
-    dof = N * (N + 1) // 2
-    critical = chi2.ppf(1 - alpha, dof)
+
+    # Baseline inverse
+    if baseline_cov is not None:
+        C0_inv = torch.tensor(
+            np.linalg.inv(baseline_cov + np.eye(N) * 1e-10),
+            dtype=std_innovations.dtype,
+            device=std_innovations.device)
+    else:
+        C0_inv = torch.eye(N, dtype=std_innovations.dtype,
+                           device=std_innovations.device)
 
     lambda_iw_list = []
 
     for t in range(T):
         if t < W - 1:
             # Not enough data
-            lambda_iw_list.append(torch.tensor(0.0, dtype=std_innovations.dtype,
-                                                device=std_innovations.device))
+            lambda_iw_list.append(torch.tensor(
+                0.0, dtype=std_innovations.dtype,
+                device=std_innovations.device))
             continue
 
         # Window of innovations [t-W+1, ..., t]
@@ -247,14 +280,16 @@ def iswt_torch(std_innovations, W=200, alpha=0.05, n_sensors=6):
         C_hat = (window.T @ window) / W
 
         # Regularize
-        C_hat = C_hat + torch.eye(N, dtype=std_innovations.dtype,
-                                   device=std_innovations.device) * 1e-10
+        C_hat = C_hat + torch.eye(
+            N, dtype=std_innovations.dtype,
+            device=std_innovations.device) * 1e-10
 
-        # Stein divergence: tr(C) - ln det(C) - N
-        tr_C = torch.trace(C_hat)
-        logdet_C = torch.logdet(C_hat)
+        # Generalized Stein divergence: D(C_hat || C_0)
+        M = C0_inv @ C_hat
+        tr_M = torch.trace(M)
+        logdet_M = torch.logdet(M)
 
-        lambda_val = tr_C - logdet_C - N
+        lambda_val = tr_M - logdet_M - N
         lambda_iw_list.append(lambda_val)
 
     return torch.stack(lambda_iw_list)

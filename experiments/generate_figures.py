@@ -64,8 +64,13 @@ def generate_attack_demo_data(config: ExperimentConfig):
 
     # Simulate with fault
     process = TwoTankProcess(sys_cfg)
+    attacked_idx = list(range(6))  # All sensors (MitM on sensor bus)
+    compromised_idx = [0, 1, 5]
+    iswt_cfg = calib['iswt_config']
+    baseline_cov = calib['baseline_cov']
+
     sim_fault = process.simulate(T, fault_config={
-        'sensor_idx': [5],
+        'sensor_idx': compromised_idx,
         'fault_start': 0,
         'fault_magnitude': 2.0,
     }, seed=config.seed + 1)
@@ -73,16 +78,18 @@ def generate_attack_demo_data(config: ExperimentConfig):
     # Simulate clean
     sim_clean = process.simulate(T, seed=config.seed + 2)
 
-    # Run TCA (white-box)
-    epsilon = 0.75 * sys_cfg.sigma[5]
+    # Run TCA (white-box) with proportional budget
+    fault_mult = 2.0
+    epsilon = 0.6 * fault_mult * sys_cfg.sigma
     tca = TargetedConsistencyAttack(
-        sys_cfg, ekf_cfg, config.cusum, config.iswt, config.tca
+        sys_cfg, ekf_cfg, config.cusum, iswt_cfg, config.tca,
+        baseline_cov=baseline_cov
     )
 
     try:
         tca_result = tca.run_whitebox(
             sim_fault['y_faulted'], sim_fault['u'],
-            list(range(6)), [5], epsilon, verbose=True
+            attacked_idx, compromised_idx, epsilon, verbose=True
         )
         delta = tca_result['delta']
         sds_history = tca_result['sds_history']
@@ -108,7 +115,7 @@ def generate_attack_demo_data(config: ExperimentConfig):
         cusum = CUSUMDetector(6, config.cusum)
         cusum_res = cusum.run_batch(ekf_res['std_innovation'])
 
-        iswt = ISWTDetector(6, config.iswt)
+        iswt = ISWTDetector(6, iswt_cfg, baseline_cov=baseline_cov)
         iswt_res = iswt.run_batch(ekf_res['std_innovation'])
 
         data[label] = {
@@ -131,7 +138,7 @@ def plot_cusum_timeseries(data: dict, save_path: Path):
     """Fig: CUSUM statistics under different conditions."""
     fig, axes = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
 
-    sensor_idx = 5  # Q_pump (attacked sensor)
+    sensor_idx = 0  # L1 (attacked sensor, larger sigma => clearer plots)
     h = 5.0  # Threshold
 
     for ax, (label, title) in zip(axes, [
@@ -292,7 +299,11 @@ def plot_budget_sweep(save_path: Path):
         sds_vals = []
         for r in ratios:
             key = str((regime, r))
-            sds_vals.append(raw.get(key, 0.0))
+            val = raw.get(key, {'mean': 0.0})
+            if isinstance(val, dict):
+                sds_vals.append(val.get('mean', 0.0))
+            else:
+                sds_vals.append(float(val))
 
         ax.plot(ratios, sds_vals, marker, color=color,
                 linewidth=2, markersize=8,

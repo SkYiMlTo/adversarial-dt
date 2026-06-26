@@ -147,9 +147,10 @@ def generate_synthetic_data(config: ExperimentConfig) -> dict:
         'source': 'synthetic',
         'ekf_config': calib['ekf_config'],
         'iswt_config': calib['iswt_config'],
+        'baseline_cov': calib['baseline_cov'],
         'Q': calib['Q'], 'R': calib['R'],
         'attack_info': {
-            'A1': {'start': 2000, 'end': 4000, 'type': 'steady_offset', 'sensors': ['L1'], 'magnitude': '3σ'}
+            'A1': {'start': 2000, 'end': 4000, 'type': 'steady_offset', 'sensors': ['L1'], 'magnitude': '3sigma'}
         }
     }
 
@@ -198,7 +199,7 @@ def run_table2(config: ExperimentConfig, data: dict) -> dict:
     cusum = CUSUMDetector(N, config.cusum)
     cusum_results = cusum.run_batch(ekf_results['std_innovation'])
 
-    iswt = ISWTDetector(N, iswt_cfg)
+    iswt = ISWTDetector(N, iswt_cfg, baseline_cov=data.get('baseline_cov'))
     iswt_results = iswt.run_batch(ekf_results['std_innovation'])
 
     cusum_alarm = np.any(cusum_results['alarm'], axis=1)
@@ -239,10 +240,13 @@ def run_table4_s2(config: ExperimentConfig, data: dict) -> dict:
     for regime in ['whitebox', 'greybox']:
         print(f"\n  --- {regime} ---")
         regime_results = {}
-        tca = TargetedConsistencyAttack(sys_cfg, ekf_cfg, config.cusum, iswt_cfg, config.tca)
+        tca = TargetedConsistencyAttack(
+            sys_cfg, ekf_cfg, config.cusum, iswt_cfg, config.tca,
+            baseline_cov=data.get('baseline_cov')
+        )
 
         for ratio in [0.50, 0.75, 1.00]:
-            epsilon = ratio * sys_cfg.sigma[compromised_idx[0]]
+            epsilon = ratio * sys_cfg.sigma
             try:
                 if regime == 'whitebox':
                     tca_result = tca.run_whitebox(
@@ -264,7 +268,7 @@ def run_table4_s2(config: ExperimentConfig, data: dict) -> dict:
                 cusum = CUSUMDetector(N, config.cusum)
                 cusum_res = cusum.run_batch(ekf_res['std_innovation'])
 
-                iswt = ISWTDetector(N, iswt_cfg)
+                iswt = ISWTDetector(N, iswt_cfg, baseline_cov=data.get('baseline_cov'))
                 iswt_res = iswt.run_batch(ekf_res['std_innovation'])
 
                 cusum_alarm = np.any(cusum_res['alarm'], axis=1)

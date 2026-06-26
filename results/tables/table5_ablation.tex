@@ -1,16 +1,17 @@
 \begin{table}[t]
 \centering
 \caption{Ablation of detection pipeline components.
-S1, white-box TCA, $\epsilon = 0.75\,\sigma_\eta$.}
+S1, white-box TCA (full capability), $\epsilon = 0.75\,\sigma_\eta$.
+Mean $\pm$ std over 10 sessions.}
 \label{tab:iwd_ablation}
 \small
 \begin{tabular}{@{}lcc@{}}
 \toprule
 \textbf{Configuration} & \textbf{TPR (\%)} & \textbf{FPR (\%)} \\
 \midrule
-CUSUM only & 15.2\% & 9.5\% \\
-ISWT (IWD) only & 0.0\% & 9.0\% \\
-IWD$\vee$CUSUM (combined) & 15.2\% & 9.5\% \\
+CUSUM only & 60.2$\pm$32.6\% & 11.8$\pm$3.6\% \\
+ISWT (IWD) only & 65.8$\pm$26.8\% & 31.2$\pm$14.8\% \\
+IWD$\vee$CUSUM (combined) & 71.7$\pm$23.3\% & 33.1$\pm$13.8\% \\
 \bottomrule
 \end{tabular}
 \end{table}
