@@ -64,6 +64,8 @@ RESULTS_DIR = Path(__file__).resolve().parent.parent / "results" / "s3"
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 if DEVICE.type == 'cuda':
     print(f"[GPU] Using CUDA device: {torch.cuda.get_device_name(0)}")
+    # Disable cuDNN to allow RNN/LSTM backpropagation in eval mode
+    torch.backends.cudnn.enabled = False
 else:
     print("[CPU] CUDA not available — running on CPU.")
 

@@ -411,7 +411,7 @@ class DifferentiableEKF:
     def forward_pass(self, Y, U, delta=None):
         """Run the full EKF forward pass with optional perturbation.
 
-                Args:
+        Args:
             Y: (T, N) measurement tensor (raw, without perturbation).
             U: (T, 2) control input tensor.
             delta: (T, N) perturbation tensor (requires_grad=True for TCA).
@@ -430,63 +430,41 @@ class DifferentiableEKF:
         assert N == self.n
 
         # ----------------------------------------------------------------
-        # PASS 1 (fast, no_grad): run full EKF on unperturbed Y to get
-        #   x_pred[t], S_diag[t], K[t] for all t.
+        # PASS 1 (fast, numpy): run the EKF on unperturbed Y using the
+        #   existing fast NumPy EKF to obtain x_pred[t] and S_diag[t].
         #
-        # Key insight: P, Phi, K, and x_pred do NOT depend on delta
-        # (delta only shifts measurements, not the prior state trajectory
-        # used for linearization). This frozen-linearization approximation
-        # is the standard EKF-based adversarial attack model and is exact
-        # to first order in delta.
+        # Key insight: x_pred and S_diag do NOT depend on delta under the
+        # frozen-linearization approximation (standard in EKF-based attack
+        # research, exact to first order in delta). This lets us bypass
+        # the slow Python torch loop entirely.
         # ----------------------------------------------------------------
-        with torch.no_grad():
-            x_hat_ng = self.x0.clone()
-            P_ng = self.P0.clone()
+        from .ekf import ExtendedKalmanFilter
 
-            x_pred_list = []
-            S_diag_list = []
-            K_list = []
+        Y_np = Y.detach().cpu().numpy()
+        U_np = U.detach().cpu().numpy()
 
-            for t in range(T):
-                u_t = U[t]
-                # Predict
-                x_p = self._f_torch(x_hat_ng, u_t)
-                Phi = self._jacobian_torch(x_hat_ng, u_t)
-                P_pred = Phi @ P_ng @ Phi.T + self.Q
+        numpy_ekf = ExtendedKalmanFilter(self.sys, self.ekf)
+        batch = numpy_ekf.run_batch(Y_np, U_np)
 
-                # Innovation covariance and Kalman gain
-                S = P_pred + self.R
-                S_diag = torch.diag(S)
-                K = P_pred @ torch.linalg.inv(S)
+        x_pred_all = torch.tensor(batch['x_pred'], dtype=self.dtype,
+                                  device=self.device)   # (T, N), detached
+        S_diag_all = torch.tensor(batch['S_diag'], dtype=self.dtype,
+                                  device=self.device)   # (T, N), detached
 
-                # Innovation on unperturbed Y (for state update only)
-                nu_clean = Y[t] - x_p
-
-                # State update (unperturbed)
-                x_hat_ng = x_p + K @ nu_clean
-                IKH = torch.eye(self.n, dtype=self.dtype, device=self.device) - K
-                P_ng = IKH @ P_pred @ IKH.T + K @ self.R @ K.T
-
-                x_pred_list.append(x_p)
-                S_diag_list.append(S_diag)
-                K_list.append(K)
-
-            # Stack into tensors (still detached)
-            x_pred_all = torch.stack(x_pred_list)  # (T, N)
-            S_diag_all = torch.stack(S_diag_list)  # (T, N)
+        # K_list is only used by callers that inspect Kalman gains (none
+        # in the TCA pipeline), so we pass an empty list for speed.
+        K_list = []
 
         # ----------------------------------------------------------------
         # PASS 2 (differentiable, trivially cheap): compute innovations
         #   nu[t] = Y[t] + delta[t] - x_pred[t]
-        # where x_pred is treated as a constant (frozen linearization).
         # The computation graph only touches delta — backward is O(T*N).
         # ----------------------------------------------------------------
         if delta is not None:
-            nu_all = Y + delta - x_pred_all   # (T, N), grad flows through delta
+            nu_all = Y + delta - x_pred_all   # grad flows through delta
         else:
-            nu_all = Y - x_pred_all            # (T, N), no grad needed
+            nu_all = Y - x_pred_all
 
-        # Standardize using pre-computed S_diag
         std_nu_all = nu_all / torch.sqrt(
             torch.clamp(S_diag_all, min=1e-12))
 
