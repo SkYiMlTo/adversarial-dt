@@ -34,6 +34,10 @@ import time
 import numpy as np
 from pathlib import Path
 
+# Force UTF-8 output on Windows (avoids cp1252 UnicodeEncodeError for Greek chars)
+if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
+    sys.stdout.reconfigure(encoding='utf-8')
+
 # Add parent dir to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -53,6 +57,48 @@ from core.gan_evasion import train_evasion_gan
 
 # Output directory
 RESULTS_DIR = Path(__file__).resolve().parent.parent / "results" / "s3"
+
+# ---------------------------------------------------------------------------
+# GPU / device selection
+# ---------------------------------------------------------------------------
+DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+if DEVICE.type == 'cuda':
+    print(f"[GPU] Using CUDA device: {torch.cuda.get_device_name(0)}")
+else:
+    print("[CPU] CUDA not available — running on CPU.")
+
+# ---------------------------------------------------------------------------
+# Wall-clock budget: hard limit of 2 hours (7200 seconds).
+# Phases that respect this budget will skip remaining configs when time is up.
+# ---------------------------------------------------------------------------
+WALL_CLOCK_BUDGET_SEC = 7200   # 2 hours
+_EXPERIMENT_START: float = 0.0  # set in main()
+
+def time_budget_remaining() -> float:
+    """Return seconds remaining in the 2-hour budget."""
+    return max(0.0, WALL_CLOCK_BUDGET_SEC - (time.time() - _EXPERIMENT_START))
+
+# ---------------------------------------------------------------------------
+# FAST_MODE: set to True for a quick smoke-test (~10 min on CPU).
+# Set to False for a full GPU-accelerated run within the 2-hour budget.
+# GPU-mode parameters below replace the fast-mode overrides.
+# ---------------------------------------------------------------------------
+FAST_MODE = False
+
+# Fast-mode overrides (used only when FAST_MODE=True)
+_FAST_K_PGD       = 15    # PGD iterations (vs full)
+_FAST_T_EVAL      = 200   # Eval session length in steps
+_FAST_FAULT_MULTS = [2.0, 4.0]          # Subset of fault magnitudes
+_FAST_EPS_RATIOS  = [0.50, 1.50]        # Subset of budget ratios
+_FAST_GAN_SESSIONS = 10   # GAN training sessions
+
+# GPU-mode overrides (used when FAST_MODE=False).
+# These are tuned to finish within ~2 hours on a modern NVIDIA GPU.
+_GPU_K_PGD        = 100   # Full PGD iterations
+_GPU_T_EVAL       = 600   # Full session length (600 steps = 10 min at 1 Hz)
+_GPU_FAULT_MULTS  = [1.0, 2.0, 3.0, 4.0]   # All fault magnitudes
+_GPU_EPS_RATIOS   = [0.50, 1.00, 1.50]      # Budget sweep
+_GPU_GAN_SESSIONS = 50    # Full GAN training
 
 
 # ======================================================================
@@ -250,16 +296,38 @@ def run_phase_b(config: ExperimentConfig,
     iswt_cfg = calib['iswt_config']
     Q_hat = calib['Q']
     R = calib['R']
-    T_eval = config.s1_session_duration_steps
     W = iswt_cfg.W
+
+    # --- Mode overrides ---
+    if FAST_MODE:
+        T_eval       = _FAST_T_EVAL
+        fault_mults  = _FAST_FAULT_MULTS
+        eps_ratios   = _FAST_EPS_RATIOS
+        k_pgd        = _FAST_K_PGD
+        print(f"  [FAST_MODE] T_eval={T_eval}, K_pgd={k_pgd}, "
+              f"faults={fault_mults}, eps={eps_ratios}")
+    else:
+        T_eval       = _GPU_T_EVAL
+        fault_mults  = _GPU_FAULT_MULTS
+        eps_ratios   = _GPU_EPS_RATIOS
+        k_pgd        = _GPU_K_PGD
+        print(f"  [GPU_MODE] T_eval={T_eval}, K_pgd={k_pgd}, "
+              f"faults={fault_mults}, eps={eps_ratios}, "
+              f"device={DEVICE}")
 
     process = TwoTankProcess(sys_cfg)
     table7 = {}
 
-    for fault_mult in config.s1_fault_magnitudes:
-        for eps_ratio in [0.50, 1.00, 1.50]:
+    for fault_mult in fault_mults:
+        for eps_ratio in eps_ratios:
+            # Wall-clock budget check
+            if time_budget_remaining() < 60:
+                print("  [BUDGET] 2-hour budget nearly exhausted — skipping remaining Phase B configs.")
+                break
+
             key = f"{fault_mult}sigma_eps{eps_ratio}"
-            print(f"\n  --- Fault={fault_mult}σ, ε/σ={eps_ratio} ---")
+            print(f"\n  --- Fault={fault_mult}σ, ε/σ={eps_ratio} "
+                  f"(budget left: {time_budget_remaining()/60:.1f} min) ---")
 
             # Generate faulted data
             sim = process.simulate(T_eval, fault_config={
@@ -272,8 +340,13 @@ def run_phase_b(config: ExperimentConfig,
             U = sim['u']
             epsilon = eps_ratio * sys_cfg.sigma
 
+            # Override K based on mode
+            tca_cfg = config.tca
+            from dataclasses import replace
+            tca_cfg = replace(tca_cfg, K=k_pgd)
+
             tca = TargetedConsistencyAttack(
-                sys_cfg, ekf_cfg, config.cusum, iswt_cfg, config.tca)
+                sys_cfg, ekf_cfg, config.cusum, iswt_cfg, tca_cfg)
 
             # --- TCA without LSTM (existing) ---
             print("    Running TCA (CUSUM+ISWT)...")
@@ -398,8 +471,25 @@ def run_phase_c(config: ExperimentConfig,
     iswt_cfg = calib['iswt_config']
     Q_hat = calib['Q']
     R = calib['R']
-    T_eval = config.s1_session_duration_steps
     W = iswt_cfg.W
+
+    # --- Mode overrides ---
+    if FAST_MODE:
+        T_eval         = _FAST_T_EVAL
+        fault_mults_c  = _FAST_FAULT_MULTS
+        eps_ratios_c   = _FAST_EPS_RATIOS
+        n_gan_sessions = _FAST_GAN_SESSIONS
+        k_pgd_c        = _FAST_K_PGD
+        print(f"  [FAST_MODE] T_eval={T_eval}, K_pgd={k_pgd_c}, "
+              f"GAN sessions={n_gan_sessions}")
+    else:
+        T_eval         = _GPU_T_EVAL
+        fault_mults_c  = _GPU_FAULT_MULTS
+        eps_ratios_c   = _GPU_EPS_RATIOS
+        n_gan_sessions = _GPU_GAN_SESSIONS
+        k_pgd_c        = _GPU_K_PGD
+        print(f"  [GPU_MODE] T_eval={T_eval}, K_pgd={k_pgd_c}, "
+              f"GAN sessions={n_gan_sessions}, device={DEVICE}")
 
     # --- Step 1: Train GAN ---
     print("\n[C.1] Training GAN evasion generator...")
@@ -414,7 +504,7 @@ def run_phase_c(config: ExperimentConfig,
         gan_config=config.gan,
         lstm_model=lstm_model,
         lstm_config=config.lstm,
-        n_training_sessions=config.s3_gan_train_sessions,
+        n_training_sessions=n_gan_sessions,
         seed=config.seed,
         verbose=verbose,
     )
@@ -433,10 +523,16 @@ def run_phase_c(config: ExperimentConfig,
     process = TwoTankProcess(sys_cfg)
     gan_seq_len = config.gan.seq_len
 
-    for fault_mult in [2.0, 4.0]:
-        for eps_ratio in [0.50, 1.00, 1.50]:
+    for fault_mult in fault_mults_c:
+        for eps_ratio in eps_ratios_c:
+            # Wall-clock budget check
+            if time_budget_remaining() < 60:
+                print("  [BUDGET] 2-hour budget nearly exhausted — skipping remaining Phase C configs.")
+                break
+
             key = f"{fault_mult}sigma_eps{eps_ratio}"
-            print(f"\n  --- Fault={fault_mult}σ, ε/σ={eps_ratio} ---")
+            print(f"\n  --- Fault={fault_mult}sigma, eps/sigma={eps_ratio} "
+                  f"(budget left: {time_budget_remaining()/60:.1f} min) ---")
 
             epsilon = eps_ratio * sys_cfg.sigma
 
@@ -454,8 +550,11 @@ def run_phase_c(config: ExperimentConfig,
             print("    Running PGD...")
             t_pgd_start = time.time()
 
+            tca_cfg_c = config.tca
+            from dataclasses import replace
+            tca_cfg_c = replace(tca_cfg_c, K=k_pgd_c)
             tca = TargetedConsistencyAttack(
-                sys_cfg, ekf_cfg, config.cusum, iswt_cfg, config.tca)
+                sys_cfg, ekf_cfg, config.cusum, iswt_cfg, tca_cfg_c)
             try:
                 result_pgd = tca.run_whitebox(
                     Y_faulted, U, list(range(N)), [5],
@@ -518,7 +617,7 @@ def run_phase_c(config: ExperimentConfig,
             print(f"    GAN: "
                   f"Full TPR={gan_metrics['full_tpr']:.3f}, "
                   f"time={t_gan:.4f}s, "
-                  f"speedup={t_pgd/max(t_gan,1e-6):.0f}×")
+                  f"speedup={t_pgd/max(t_gan,1e-6):.0f}x")
 
     # Save Table 8
     with open(RESULTS_DIR / "table8_gan_vs_pgd.json", 'w') as f:
@@ -571,14 +670,19 @@ def _evaluate_perturbation(Y_faulted, U, delta, sys_cfg, ekf_cfg,
 # ======================================================================
 
 def main():
+    global _EXPERIMENT_START
     print("=" * 70)
     print("S3 Neural Attack/Defense Evaluation")
+    print(f"  Device  : {DEVICE}")
+    print(f"  Mode    : {'FAST (smoke-test)' if FAST_MODE else 'FULL (GPU-optimised)'}")
+    print(f"  Budget  : {WALL_CLOCK_BUDGET_SEC / 60:.0f} minutes wall-clock")
     print("=" * 70)
 
     config = ExperimentConfig()
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     t_start = time.time()
+    _EXPERIMENT_START = t_start  # Arm the wall-clock budget
 
     # Phase A: Train LSTM, establish detection baselines
     phase_a = run_phase_a(config, verbose=True)
@@ -593,7 +697,8 @@ def main():
 
     elapsed = time.time() - t_start
     print(f"\n{'=' * 70}")
-    print(f"All S3 experiments complete in {elapsed / 60:.1f} minutes")
+    print(f"All S3 experiments complete in {elapsed / 60:.1f} minutes "
+          f"(budget used: {elapsed / WALL_CLOCK_BUDGET_SEC * 100:.1f}%)")
     print(f"Results saved to {RESULTS_DIR}")
     print(f"{'=' * 70}")
 

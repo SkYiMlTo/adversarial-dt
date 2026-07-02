@@ -129,15 +129,25 @@ class LSTMDetector:
     """
 
     def __init__(self, n_sensors: int,
-                 config: Optional[LSTMDetectorConfig] = None):
+                 config: Optional[LSTMDetectorConfig] = None,
+                 device=None):
         """
         Args:
             n_sensors: Number of sensors (N).
             config: LSTM configuration.
+            device: torch.device (defaults to CUDA if available, else CPU).
         """
         self.cfg = config or LSTMDetectorConfig()
         self.n_sensors = n_sensors
-        self.model = LSTMAutoencoder(n_sensors, self.cfg)
+
+        # Device selection
+        if device is None:
+            self.device = torch.device(
+                'cuda' if torch.cuda.is_available() else 'cpu')
+        else:
+            self.device = torch.device(device)
+
+        self.model = LSTMAutoencoder(n_sensors, self.cfg).to(self.device)
         self.threshold = float('inf')  # Set after training
         self.trained = False
 
@@ -193,7 +203,7 @@ class LSTMDetector:
 
         # Create windowed training data
         windows = self._create_windows(clean_innovations)
-        X = torch.tensor(windows, dtype=torch.float32)
+        X = torch.tensor(windows, dtype=torch.float32).to(self.device)
 
         # Train/val split (80/20)
         n_train = int(0.8 * len(X))
@@ -208,6 +218,9 @@ class LSTMDetector:
             self.model.parameters(), lr=cfg.learning_rate)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer, patience=10, factor=0.5)
+
+        if verbose and self.device.type == 'cuda':
+            print(f"  [LSTM] Training on {torch.cuda.get_device_name(0)}")
 
         self.model.train()
         train_losses = []
@@ -250,7 +263,7 @@ class LSTMDetector:
         # Calibrate threshold from training data reconstruction errors
         self.model.eval()
         with torch.no_grad():
-            train_scores = self.model.compute_anomaly_score(X).numpy()
+            train_scores = self.model.compute_anomaly_score(X).cpu().numpy()
 
         self.threshold = float(np.percentile(
             train_scores, cfg.threshold_percentile))
@@ -313,7 +326,7 @@ class LSTMDetector:
         # Compute anomaly score
         self.model.eval()
         with torch.no_grad():
-            x = torch.tensor(window, dtype=torch.float32).unsqueeze(0)
+            x = torch.tensor(window, dtype=torch.float32).unsqueeze(0).to(self.device)
             self.anomaly_score = float(
                 self.model.compute_anomaly_score(x).item())
 
@@ -356,14 +369,14 @@ class LSTMDetector:
         windows = self._create_windows(std_innovations)
         self.model.eval()
         with torch.no_grad():
-            X = torch.tensor(windows, dtype=torch.float32)
-            # Process in chunks to avoid memory issues
+            X = torch.tensor(windows, dtype=torch.float32).to(self.device)
+            # Process in chunks to avoid GPU OOM
             chunk_size = 256
             scores_list = []
             for i in range(0, len(X), chunk_size):
                 chunk = X[i:i + chunk_size]
                 scores_list.append(
-                    self.model.compute_anomaly_score(chunk).numpy())
+                    self.model.compute_anomaly_score(chunk).cpu().numpy())
             scores = np.concatenate(scores_list)
 
         # Map window scores back to timesteps

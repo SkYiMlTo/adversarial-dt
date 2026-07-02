@@ -167,9 +167,12 @@ class TargetedConsistencyAttack:
         T, N = Y.shape
         cfg = self.tca_cfg
 
-        # Convert to tensors
-        Y_t = torch.tensor(Y, dtype=torch.float64)
-        U_t = torch.tensor(U, dtype=torch.float64)
+        # Auto-select device (GPU if available)
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+        # Convert to tensors on device
+        Y_t = torch.tensor(Y, dtype=torch.float64, device=device)
+        U_t = torch.tensor(U, dtype=torch.float64, device=device)
 
         # Initialize perturbation (small random for symmetry breaking)
         eps_np = np.asarray(epsilon)
@@ -181,17 +184,17 @@ class TargetedConsistencyAttack:
         delta_init *= attack_mask_np[np.newaxis, :]
 
         delta = torch.tensor(delta_init, dtype=torch.float64,
-                             requires_grad=True)
+                             device=device, requires_grad=True)
 
         # Convert epsilon to tensor for broadcasting
-        eps_t = torch.tensor(eps_np, dtype=torch.float64).unsqueeze(0)
+        eps_t = torch.tensor(eps_np, dtype=torch.float64, device=device).unsqueeze(0)
 
         # Create attack mask
-        mask = torch.zeros(N, dtype=torch.float64)
+        mask = torch.zeros(N, dtype=torch.float64, device=device)
         mask[attacked_idx] = 1.0
 
-        # Differentiable EKF
-        diff_ekf = DifferentiableEKF(self.sys, self.ekf_cfg)
+        # Differentiable EKF (on same device)
+        diff_ekf = DifferentiableEKF(self.sys, self.ekf_cfg, device=device)
 
         # Adam optimizer state
         m = torch.zeros_like(delta)  # First moment
@@ -292,7 +295,7 @@ class TargetedConsistencyAttack:
             best_delta = delta.detach()
 
         return {
-            'delta': best_delta.numpy(),
+            'delta': best_delta.cpu().numpy(),
             'sds_history': sds_history,
             'surr_history': surr_history,
             'sds_final': best_sds,
@@ -352,9 +355,12 @@ class TargetedConsistencyAttack:
         cfg = self.tca_cfg
         lstm_cfg = lstm_config or LSTMDetectorConfig()
 
-        # Convert to tensors
-        Y_t = torch.tensor(Y, dtype=torch.float64)
-        U_t = torch.tensor(U, dtype=torch.float64)
+        # Auto-select device (GPU if available)
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+        # Convert to tensors on device
+        Y_t = torch.tensor(Y, dtype=torch.float64, device=device)
+        U_t = torch.tensor(U, dtype=torch.float64, device=device)
 
         # Initialize perturbation with small random noise
         eps_np = np.asarray(epsilon)
@@ -365,20 +371,20 @@ class TargetedConsistencyAttack:
         delta_init *= attack_mask_np[np.newaxis, :]
 
         delta = torch.tensor(delta_init, dtype=torch.float64,
-                             requires_grad=True)
+                             device=device, requires_grad=True)
 
         # Budget tensor
-        eps_t = torch.tensor(eps_np, dtype=torch.float64).unsqueeze(0)
+        eps_t = torch.tensor(eps_np, dtype=torch.float64, device=device).unsqueeze(0)
 
         # Attack mask
-        mask = torch.zeros(N, dtype=torch.float64)
+        mask = torch.zeros(N, dtype=torch.float64, device=device)
         mask[attacked_idx] = 1.0
 
-        # Differentiable EKF
-        diff_ekf = DifferentiableEKF(self.sys, self.ekf_cfg)
+        # Differentiable EKF (on same device)
+        diff_ekf = DifferentiableEKF(self.sys, self.ekf_cfg, device=device)
 
-        # LSTM model in eval mode (but with gradient flow)
-        lstm_model_f64 = _cast_lstm_to_float64(lstm_model)
+        # LSTM model in eval mode (float64, on same device, with gradient flow)
+        lstm_model_f64 = _cast_lstm_to_float64(lstm_model, device=device)
         lstm_model_f64.eval()
 
         # Get LSTM threshold from training data (fallback: 0.01)
@@ -449,7 +455,8 @@ class TargetedConsistencyAttack:
             if len(valid_lstm) > 0:
                 lstm_penalty = torch.mean(valid_lstm) / max(lstm_threshold, 1e-8)
             else:
-                lstm_penalty = torch.tensor(0.0, dtype=torch.float64)
+                lstm_penalty = torch.tensor(0.0, dtype=torch.float64,
+                                            device=device)
 
             surrogate_loss = base_loss + lstm_weight * lstm_penalty
 
@@ -490,7 +497,7 @@ class TargetedConsistencyAttack:
             best_delta = delta.detach()
 
         return {
-            'delta': best_delta.numpy(),
+            'delta': best_delta.cpu().numpy(),
             'sds_history': sds_history,
             'surr_history': surr_history,
             'sds_final': best_sds,
@@ -788,8 +795,8 @@ class TargetedConsistencyAttack:
 # Helper: cast LSTM model to float64 for EKF compatibility
 # ======================================================================
 
-def _cast_lstm_to_float64(model):
-    """Cast an LSTM model's parameters to float64.
+def _cast_lstm_to_float64(model, device=None):
+    """Cast an LSTM model's parameters to float64 and move to device.
 
     The differentiable EKF operates in float64 for numerical precision.
     The LSTM (trained in float32) must be cast to match dtypes for
@@ -797,11 +804,15 @@ def _cast_lstm_to_float64(model):
 
     Args:
         model: LSTMAutoencoder (nn.Module) in float32.
+        device: Target torch.device. Defaults to CUDA if available, else CPU.
 
     Returns:
-        model_f64: Same model with all parameters in float64.
+        model_f64: Same model with all parameters in float64 on `device`.
     """
     import copy
+    import torch
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model_f64 = copy.deepcopy(model)
-    model_f64 = model_f64.double()
+    model_f64 = model_f64.double().to(device)
     return model_f64

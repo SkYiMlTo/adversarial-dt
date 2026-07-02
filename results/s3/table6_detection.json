@@ -1,0 +1,30 @@
+{
+  "fpr": {
+    "cusum_only": 0.095,
+    "iswt_only": 0.09,
+    "lstm_only": 0.125,
+    "cusum_iswt": 0.095,
+    "full_pipeline": 0.125
+  },
+  "tpr_1.0sigma": {
+    "cusum_only": 0.345,
+    "iswt_only": 0.0,
+    "lstm_only": 0.1175,
+    "cusum_iswt": 0.345,
+    "full_pipeline": 0.345
+  },
+  "tpr_2.0sigma": {
+    "cusum_only": 1.0,
+    "iswt_only": 0.0,
+    "lstm_only": 0.1125,
+    "cusum_iswt": 1.0,
+    "full_pipeline": 1.0
+  },
+  "tpr_4.0sigma": {
+    "cusum_only": 1.0,
+    "iswt_only": 0.0,
+    "lstm_only": 0.125,
+    "cusum_iswt": 1.0,
+    "full_pipeline": 1.0
+  }
+}

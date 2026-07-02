@@ -237,13 +237,17 @@ class DifferentiableEKF:
     """
 
     def __init__(self, sys_config: Optional[SystemConfig] = None,
-                 ekf_config: Optional[EKFConfig] = None):
+                 ekf_config: Optional[EKFConfig] = None,
+                 device=None):
         import torch
 
         self.sys = sys_config or SystemConfig()
         self.ekf = ekf_config or EKFConfig()
         self.dtype = torch.float64
-        self.device = torch.device('cpu')
+        if device is None:
+            self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        else:
+            self.device = torch.device(device)
 
         self.n = self.sys.n_states
         self.m = self.sys.n_sensors
