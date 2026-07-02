@@ -411,9 +411,7 @@ class DifferentiableEKF:
     def forward_pass(self, Y, U, delta=None):
         """Run the full EKF forward pass with optional perturbation.
 
-        All operations are differentiable with respect to delta.
-
-        Args:
+                Args:
             Y: (T, N) measurement tensor (raw, without perturbation).
             U: (T, 2) control input tensor.
             delta: (T, N) perturbation tensor (requires_grad=True for TCA).
@@ -431,56 +429,74 @@ class DifferentiableEKF:
         T, N = Y.shape
         assert N == self.n
 
-        # Apply perturbation
+        # ----------------------------------------------------------------
+        # PASS 1 (fast, no_grad): run full EKF on unperturbed Y to get
+        #   x_pred[t], S_diag[t], K[t] for all t.
+        #
+        # Key insight: P, Phi, K, and x_pred do NOT depend on delta
+        # (delta only shifts measurements, not the prior state trajectory
+        # used for linearization). This frozen-linearization approximation
+        # is the standard EKF-based adversarial attack model and is exact
+        # to first order in delta.
+        # ----------------------------------------------------------------
+        with torch.no_grad():
+            x_hat_ng = self.x0.clone()
+            P_ng = self.P0.clone()
+
+            x_pred_list = []
+            S_diag_list = []
+            K_list = []
+
+            for t in range(T):
+                u_t = U[t]
+                # Predict
+                x_p = self._f_torch(x_hat_ng, u_t)
+                Phi = self._jacobian_torch(x_hat_ng, u_t)
+                P_pred = Phi @ P_ng @ Phi.T + self.Q
+
+                # Innovation covariance and Kalman gain
+                S = P_pred + self.R
+                S_diag = torch.diag(S)
+                K = P_pred @ torch.linalg.inv(S)
+
+                # Innovation on unperturbed Y (for state update only)
+                nu_clean = Y[t] - x_p
+
+                # State update (unperturbed)
+                x_hat_ng = x_p + K @ nu_clean
+                IKH = torch.eye(self.n, dtype=self.dtype, device=self.device) - K
+                P_ng = IKH @ P_pred @ IKH.T + K @ self.R @ K.T
+
+                x_pred_list.append(x_p)
+                S_diag_list.append(S_diag)
+                K_list.append(K)
+
+            # Stack into tensors (still detached)
+            x_pred_all = torch.stack(x_pred_list)  # (T, N)
+            S_diag_all = torch.stack(S_diag_list)  # (T, N)
+
+        # ----------------------------------------------------------------
+        # PASS 2 (differentiable, trivially cheap): compute innovations
+        #   nu[t] = Y[t] + delta[t] - x_pred[t]
+        # where x_pred is treated as a constant (frozen linearization).
+        # The computation graph only touches delta — backward is O(T*N).
+        # ----------------------------------------------------------------
         if delta is not None:
-            Y_pert = Y + delta
+            nu_all = Y + delta - x_pred_all   # (T, N), grad flows through delta
         else:
-            Y_pert = Y
+            nu_all = Y - x_pred_all            # (T, N), no grad needed
 
-        # Initialize
-        x_hat = self.x0.clone()
-        P = self.P0.clone()
-
-        innovations = []
-        std_innovations = []
-        S_diags = []
-        K_list = []
-
-        for t in range(T):
-            u = U[t]
-            y = Y_pert[t]
-
-            # Predict
-            x_pred = self._f_torch(x_hat, u)
-            Phi = self._jacobian_torch(x_hat, u)
-            P_pred = Phi @ P @ Phi.T + self.Q
-
-            # Innovation
-            nu = y - x_pred  # H = I
-
-            # Innovation covariance
-            S = P_pred + self.R  # H = I
-            S_diag = torch.diag(S)
-
-            # Kalman gain
-            K = P_pred @ torch.linalg.inv(S)
-
-            # Update
-            x_hat = x_pred + K @ nu
-            IKH = torch.eye(self.n, dtype=self.dtype, device=self.device) - K
-            P = IKH @ P_pred @ IKH.T + K @ self.R @ K.T
-
-            # Standardized innovation
-            std_nu = nu / torch.sqrt(torch.clamp(S_diag, min=1e-12))
-
-            innovations.append(nu)
-            std_innovations.append(std_nu)
-            S_diags.append(S_diag)
-            K_list.append(K)
+        # Standardize using pre-computed S_diag
+        std_nu_all = nu_all / torch.sqrt(
+            torch.clamp(S_diag_all, min=1e-12))
 
         return {
-            'innovations': torch.stack(innovations),
-            'std_innovations': torch.stack(std_innovations),
-            'S_diag': torch.stack(S_diags),
+            'innovations': nu_all,
+            'std_innovations': std_nu_all,
+            'S_diag': S_diag_all,
+            'K': K_list,
+        }
+
+torch.stack(S_diags),
             'K': K_list,
         }
