@@ -435,9 +435,9 @@ def lstm_anomaly_torch(model: LSTMAutoencoder,
     # Compute anomaly scores through the model
     window_scores = model.compute_anomaly_score(windows)  # (n_windows,)
 
-    # Map back to timesteps
-    for i in range(n_windows):
-        t = i + seq_len - 1
-        scores[t] = window_scores[i]
+    # Map back to timesteps using vectorised torch.cat (very fast, graph-friendly)
+    padding = torch.zeros(seq_len - 1, dtype=std_innovations.dtype,
+                          device=std_innovations.device)
+    scores = torch.cat([padding, window_scores])
 
     return scores
