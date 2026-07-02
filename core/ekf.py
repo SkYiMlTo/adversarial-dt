@@ -496,7 +496,3 @@ class DifferentiableEKF:
             'S_diag': S_diag_all,
             'K': K_list,
         }
-
-torch.stack(S_diags),
-            'K': K_list,
-        }
