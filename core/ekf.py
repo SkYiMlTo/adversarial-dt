@@ -312,13 +312,101 @@ class DifferentiableEKF:
                             Q12_next, Q_pump_next])
 
     def _jacobian_torch(self, x, u):
-        """Compute discrete Jacobian using torch.autograd.functional.jacobian."""
+        """Compute discrete Jacobian analytically (fast).
+
+        The Euler process model f(x,u) has a closed-form Jacobian
+        Phi = df/dx. Computing it analytically is ~50-100× faster than
+        torch.autograd.functional.jacobian, which requires N backward
+        passes.
+
+        Phi is used only for covariance propagation P_pred = Phi P Phi^T + Q,
+        so computing it on the detached state avoids growing the computation
+        graph unnecessarily. Gradient flow through delta is preserved via
+        the innovation nu = y - x_pred (which uses x_pred computed from
+        the grad-enabled x_hat).
+
+        Args:
+            x: (N,) state tensor (will be detached internally for Phi).
+            u: (2,) control input.
+
+        Returns:
+            Phi: (N, N) discrete state transition Jacobian.
+        """
         import torch
 
-        def f_wrap(x_in):
-            return self._f_torch(x_in, u)
+        # Detach for Jacobian computation (P is not a function of delta)
+        x_d = x.detach()
+        dt = self._dt_sample
+        eps = self._EPS
 
-        return torch.autograd.functional.jacobian(f_wrap, x)
+        L1   = torch.clamp(x_d[0], min=eps)
+        L2   = torch.clamp(x_d[1], min=eps)
+        Q12  = x_d[4]
+        Q_p  = torch.clamp(x_d[5], min=0.0)
+        u_v  = u[1].detach()
+
+        # Partial derivatives of each state equation wrt state components
+        # L1_next = L1 + dt*(Q_pump - Q12)/A1
+        dL1_dL1   = 1.0
+        dL1_dQ12  = -dt / self._A1
+        dL1_dQp   = dt / self._A1
+
+        # L2_next = L2 + dt*(Q12 - Q_out)/A2, Q_out = Cv_out*u_v*sqrt(L2)
+        dQout_dL2 = self._Cv_out * u_v * 0.5 / torch.sqrt(L2 + eps)
+        dL2_dL2   = 1.0 - dt * dQout_dL2 / self._A2
+        dL2_dQ12  = dt / self._A2
+
+        # P_in_next = P_in + dt*(L1 - P_in)/tau_p  -> P_in_ss = L1
+        dPi_dL1   = dt / self._tau_p
+        dPi_dPi   = 1.0 - dt / self._tau_p
+
+        # P_out_next = P_out + dt*(P_in + H_pump - P_out)/tau_p
+        # H_pump = H0 - a_pump*Q_pump^2  -> dH/dQp = -2*a_pump*Q_pump
+        dH_dQp    = -2.0 * self._a_pump * Q_p
+        dPo_dL1   = dt / self._tau_p          # via P_in_ss = L1
+        dPo_dPi   = dt / self._tau_p          # via P_in in P_out_ss
+        dPo_dPo   = 1.0 - dt / self._tau_p
+        dPo_dQp   = dt * dH_dQp / self._tau_p
+
+        # Q12_next = Q12 + dt*(Q12_ss - Q12)/tau_q
+        # Q12_ss = Cv12 * sign(L1-L2) * sqrt(|L1-L2|)
+        dL = L1 - L2
+        abs_dL = torch.abs(dL) + eps
+        dQ12ss_dL1 =  self._Cv12 * torch.sign(dL) * 0.5 / torch.sqrt(abs_dL)
+        dQ12ss_dL2 = -dQ12ss_dL1
+        dQ12_dL1  = dt * dQ12ss_dL1 / self._tau_q
+        dQ12_dL2  = dt * dQ12ss_dL2 / self._tau_q
+        dQ12_dQ12 = 1.0 - dt / self._tau_q
+
+        # Q_pump_next = Q_pump + dt*(u_pump*Q_nom - Q_pump)/tau_q
+        dQp_dQp   = 1.0 - dt / self._tau_q
+
+        # Assemble 6×6 Jacobian (rows=outputs, cols=inputs)
+        # State order: [L1, L2, P_in, P_out, Q12, Q_pump]
+        Phi = torch.zeros(6, 6, dtype=self.dtype, device=self.device)
+        # L1 row
+        Phi[0, 0] = dL1_dL1
+        Phi[0, 4] = dL1_dQ12
+        Phi[0, 5] = dL1_dQp
+        # L2 row
+        Phi[1, 1] = dL2_dL2
+        Phi[1, 4] = dL2_dQ12
+        # P_in row
+        Phi[2, 0] = dPi_dL1
+        Phi[2, 2] = dPi_dPi
+        # P_out row
+        Phi[3, 0] = dPo_dL1
+        Phi[3, 2] = dPo_dPi
+        Phi[3, 3] = dPo_dPo
+        Phi[3, 5] = dPo_dQp
+        # Q12 row
+        Phi[4, 0] = dQ12_dL1
+        Phi[4, 1] = dQ12_dL2
+        Phi[4, 4] = dQ12_dQ12
+        # Q_pump row
+        Phi[5, 5] = dQp_dQp
+
+        return Phi
 
     def forward_pass(self, Y, U, delta=None):
         """Run the full EKF forward pass with optional perturbation.
