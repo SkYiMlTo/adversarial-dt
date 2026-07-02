@@ -263,33 +263,33 @@ def iswt_torch(std_innovations, W=200, alpha=0.05, n_sensors=6,
         C0_inv = torch.eye(N, dtype=std_innovations.dtype,
                            device=std_innovations.device)
 
-    lambda_iw_list = []
+    # If T < W, return zeros
+    if T < W:
+        return torch.zeros(T, dtype=std_innovations.dtype,
+                           device=std_innovations.device)
 
-    for t in range(T):
-        if t < W - 1:
-            # Not enough data
-            lambda_iw_list.append(torch.tensor(
-                0.0, dtype=std_innovations.dtype,
-                device=std_innovations.device))
-            continue
+    # Unfold dimension 0 to create sliding windows of size W
+    # permute(0, 2, 1) converts shape (T - W + 1, N, W) to (T - W + 1, W, N)
+    windows = std_innovations.unfold(0, W, 1).permute(0, 2, 1)
 
-        # Window of innovations [t-W+1, ..., t]
-        window = std_innovations[t - W + 1: t + 1]  # (W, N)
+    # Compute sample covariance matrices in parallel
+    C_hat = torch.bmm(windows.transpose(1, 2), windows) / W
 
-        # Sample covariance
-        C_hat = (window.T @ window) / W
+    # Regularize
+    eye = torch.eye(N, dtype=std_innovations.dtype,
+                    device=std_innovations.device).unsqueeze(0)
+    C_hat = C_hat + eye * 1e-10
 
-        # Regularize
-        C_hat = C_hat + torch.eye(
-            N, dtype=std_innovations.dtype,
-            device=std_innovations.device) * 1e-10
+    # Batched generalized Stein divergence
+    M = C0_inv.unsqueeze(0) @ C_hat
+    tr_M = torch.diagonal(M, dim1=-2, dim2=-1).sum(dim=-1)
+    logdet_M = torch.logdet(M)
 
-        # Generalized Stein divergence: D(C_hat || C_0)
-        M = C0_inv @ C_hat
-        tr_M = torch.trace(M)
-        logdet_M = torch.logdet(M)
+    lambda_iw_valid = tr_M - logdet_M - N
 
-        lambda_val = tr_M - logdet_M - N
-        lambda_iw_list.append(lambda_val)
+    # Pad with W-1 zeros at the beginning for alignment
+    padding = torch.zeros(W - 1, dtype=std_innovations.dtype,
+                          device=std_innovations.device)
+    lambda_iw = torch.cat([padding, lambda_iw_valid])
 
-    return torch.stack(lambda_iw_list)
+    return lambda_iw

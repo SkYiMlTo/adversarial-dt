@@ -203,7 +203,7 @@ class LSTMDetector:
 
         # Create windowed training data
         windows = self._create_windows(clean_innovations)
-        X = torch.tensor(windows, dtype=torch.float32).to(self.device)
+        X = torch.tensor(windows, dtype=torch.float32)
 
         # Train/val split (80/20)
         n_train = int(0.8 * len(X))
@@ -231,6 +231,7 @@ class LSTMDetector:
             n_batches = 0
 
             for (batch_x,) in loader:
+                batch_x = batch_x.to(self.device)
                 optimizer.zero_grad()
                 recon, _ = self.model(batch_x)
                 loss = nn.functional.mse_loss(recon, batch_x)
@@ -249,8 +250,9 @@ class LSTMDetector:
             # Validation loss
             self.model.eval()
             with torch.no_grad():
-                val_recon, _ = self.model(X_val)
-                val_loss = nn.functional.mse_loss(val_recon, X_val).item()
+                X_val_dev = X_val.to(self.device)
+                val_recon, _ = self.model(X_val_dev)
+                val_loss = nn.functional.mse_loss(val_recon, X_val_dev).item()
                 val_losses.append(val_loss)
             self.model.train()
 
@@ -263,7 +265,8 @@ class LSTMDetector:
         # Calibrate threshold from training data reconstruction errors
         self.model.eval()
         with torch.no_grad():
-            train_scores = self.model.compute_anomaly_score(X).cpu().numpy()
+            X_dev = X.to(self.device)
+            train_scores = self.model.compute_anomaly_score(X_dev).cpu().numpy()
 
         self.threshold = float(np.percentile(
             train_scores, cfg.threshold_percentile))
