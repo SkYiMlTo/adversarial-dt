@@ -205,17 +205,25 @@ class GANTrainer:
             lstm_config: LSTM detector configuration.
             gan_config: GAN training parameters.
         """
-        self.G = generator
-        self.D = discriminator
+        # Auto-detect device
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+        self.G = generator.to(self.device)
+        self.D = discriminator.to(self.device)
         self.sys = sys_config or SystemConfig()
         self.ekf_cfg = ekf_config or EKFConfig()
         self.cusum_cfg = cusum_config or CUSUMConfig()
         self.iswt_cfg = iswt_config or ISWTConfig()
-        self.lstm_model = lstm_model
+        
+        if lstm_model is not None:
+            self.lstm_model = lstm_model.to(self.device)
+        else:
+            self.lstm_model = None
+            
         self.lstm_cfg = lstm_config or LSTMDetectorConfig()
         self.gan_cfg = gan_config or GANConfig()
 
-        # Optimizers
+        # Optimizers (must be created AFTER moving parameters to device)
         self.opt_G = torch.optim.Adam(
             self.G.parameters(), lr=self.gan_cfg.learning_rate_g,
             betas=(0.5, 0.999))
@@ -252,12 +260,18 @@ class GANTrainer:
 
         N = self.sys.n_sensors
 
-        # Run differentiable EKF
-        diff_ekf = DifferentiableEKF(self.sys, self.ekf_cfg)
+        # Run differentiable EKF on device
+        diff_ekf = DifferentiableEKF(self.sys, self.ekf_cfg, device=self.device)
+        
+        # Ensure inputs are on the same device
+        Y_d = Y.to(self.device)
+        U_d = U.to(self.device)
+        delta_d = delta.to(self.device)
+        
         ekf_out = diff_ekf.forward_pass(
-            Y.squeeze(0) if Y.dim() == 3 else Y,
-            U.squeeze(0) if U.dim() == 3 else U,
-            delta=delta.squeeze(0) if delta.dim() == 3 else delta
+            Y_d.squeeze(0) if Y_d.dim() == 3 else Y_d,
+            U_d.squeeze(0) if U_d.dim() == 3 else U_d,
+            delta=delta_d.squeeze(0) if delta_d.dim() == 3 else delta_d
         )
 
         std_innov = ekf_out['std_innovations']
@@ -287,9 +301,9 @@ class GANTrainer:
         else:
             mean_lstm = torch.tensor(0.0, dtype=torch.float64)
 
-        # Concatenate all statistics
+        # Concatenate all statistics on the device
         context = torch.tensor([epsilon_ratio, fault_mag],
-                               dtype=torch.float64)
+                               dtype=torch.float64, device=self.device)
         stats = torch.cat([
             max_cusum_per_sensor,  # (N,)
             mean_cusum.unsqueeze(0),  # (1,)
@@ -390,12 +404,12 @@ class GANTrainer:
 
             for idx in indices:
                 scenario = scenarios[idx]
-                Y_t = torch.tensor(scenario['Y'], dtype=torch.float64)
-                U_t = torch.tensor(scenario['U'], dtype=torch.float64)
+                Y_t = torch.tensor(scenario['Y'], dtype=torch.float64, device=self.device)
+                U_t = torch.tensor(scenario['U'], dtype=torch.float64, device=self.device)
                 eps_ratio = scenario['epsilon_ratio']
                 fault_mag = scenario['fault_mag']
                 epsilon = eps_ratio * torch.tensor(
-                    self.sys.sigma, dtype=torch.float64)
+                    self.sys.sigma, dtype=torch.float64, device=self.device)
 
                 # --- Train Discriminator ---
                 self.opt_D.zero_grad()
@@ -404,14 +418,14 @@ class GANTrainer:
                 with torch.no_grad():
                     real_stats = self._compute_pipeline_stats(
                         Y_t, U_t,
-                        torch.zeros_like(Y_t),
+                        torch.zeros_like(Y_t, device=self.device),
                         eps_ratio, fault_mag).float()
 
                 d_real = self.D(real_stats.unsqueeze(0))
                 d_loss_real = -torch.log(d_real + 1e-8).mean()
 
                 # Fake (GAN-perturbed) statistics
-                z = torch.randn(1, cfg.latent_dim, dtype=torch.float32)
+                z = torch.randn(1, cfg.latent_dim, dtype=torch.float32, device=self.device)
                 cond = self._make_conditioning(eps_ratio, fault_mag)
                 delta = self.G(z, cond, epsilon.float().unsqueeze(0))
                 delta_2d = delta.squeeze(0).double()
@@ -431,7 +445,7 @@ class GANTrainer:
                 # --- Train Generator ---
                 self.opt_G.zero_grad()
 
-                z = torch.randn(1, cfg.latent_dim, dtype=torch.float32)
+                z = torch.randn(1, cfg.latent_dim, dtype=torch.float32, device=self.device)
                 delta = self.G(z, cond, epsilon.float().unsqueeze(0))
                 delta_2d = delta.squeeze(0).double()
 
@@ -485,12 +499,12 @@ class GANTrainer:
             cond: (1, cond_dim) conditioning tensor.
         """
         N = self.sys.n_sensors
-        cond = torch.zeros(1, 2 + N, dtype=torch.float32)
+        cond = torch.zeros(1, 2 + N, dtype=torch.float32, device=self.device)
         cond[0, 0] = eps_ratio
         cond[0, 1] = fault_mag
         # Operating context: normalized sensor noise levels
         cond[0, 2:] = torch.tensor(self.sys.sigma / np.max(self.sys.sigma),
-                                    dtype=torch.float32)
+                                    dtype=torch.float32, device=self.device)
         return cond
 
     def _generator_loss(self,
@@ -522,11 +536,17 @@ class GANTrainer:
         N = self.sys.n_sensors
 
         # Run pipeline (gradients flow through delta → G)
-        diff_ekf = DifferentiableEKF(self.sys, self.ekf_cfg)
+        diff_ekf = DifferentiableEKF(self.sys, self.ekf_cfg, device=self.device)
+        
+        # Ensure inputs are on self.device
+        Y_d = Y.to(self.device)
+        U_d = U.to(self.device)
+        delta_d = delta.to(self.device)
+        
         ekf_out = diff_ekf.forward_pass(
-            Y.squeeze(0) if Y.dim() == 3 else Y,
-            U.squeeze(0) if U.dim() == 3 else U,
-            delta=delta.squeeze(0) if delta.dim() == 3 else delta)
+            Y_d.squeeze(0) if Y_d.dim() == 3 else Y_d,
+            U_d.squeeze(0) if U_d.dim() == 3 else U_d,
+            delta=delta_d.squeeze(0) if delta_d.dim() == 3 else delta_d)
 
         std_innov = ekf_out['std_innovations']
         if std_innov.dim() == 3:
@@ -578,17 +598,17 @@ class GANTrainer:
         self.G.eval()
         epsilon = torch.tensor(
             epsilon_ratio * self.sys.sigma,
-            dtype=torch.float32).unsqueeze(0).repeat(n_samples, 1)
+            dtype=torch.float32, device=self.device).unsqueeze(0).repeat(n_samples, 1)
 
         z = torch.randn(n_samples, self.gan_cfg.latent_dim,
-                         dtype=torch.float32)
+                         dtype=torch.float32, device=self.device)
         cond = self._make_conditioning(epsilon_ratio, fault_mag)
         cond = cond.repeat(n_samples, 1)
 
         with torch.no_grad():
             delta = self.G(z, cond, epsilon)
 
-        return delta.numpy()
+        return delta.cpu().numpy()
 
 
 # ======================================================================

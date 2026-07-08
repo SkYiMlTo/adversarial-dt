@@ -73,7 +73,7 @@ else:
 # Wall-clock budget: hard limit of 2 hours (7200 seconds).
 # Phases that respect this budget will skip remaining configs when time is up.
 # ---------------------------------------------------------------------------
-WALL_CLOCK_BUDGET_SEC = 7200   # 2 hours
+WALL_CLOCK_BUDGET_SEC = 14400  # 4 hours
 _EXPERIMENT_START: float = 0.0  # set in main()
 
 def time_budget_remaining() -> float:
@@ -138,34 +138,58 @@ def run_phase_a(config: ExperimentConfig,
     if not calib['whiteness_validation']['passed']:
         print("  WARNING: Whiteness validation failed on clean data")
 
-    # --- Step 2: Generate LSTM training data (longer clean session) ---
-    print(f"\n[A.2] Generating {T_train}s of clean training data...")
+    # Process model needed for both training and evaluation branches
     process = TwoTankProcess(sys_cfg)
-    process.set_seed(config.seed + 1000)
-    sim_train = process.simulate(T_train, seed=config.seed + 1000)
 
-    ekf_train = ExtendedKalmanFilter(sys_cfg, ekf_cfg)
-    ekf_train.set_noise_covariances(Q_hat, R)
-    ekf_train_results = ekf_train.run_batch(sim_train['y_noisy'],
-                                             sim_train['u'])
-    clean_innovations = ekf_train_results['std_innovation']
+    # --- Step 2: Generate LSTM training data and train (or resume) ---
+    lstm_ckpt_path = RESULTS_DIR / "lstm_model.pt"
+    if lstm_ckpt_path.exists():
+        # Resume from checkpoint — skip expensive retraining
+        print(f"\n[A.2] Checkpoint found at {lstm_ckpt_path} — skipping training.")
+        lstm_detector = LSTMDetector(N, config.lstm)
+        ckpt = torch.load(lstm_ckpt_path, map_location='cpu')
+        lstm_detector.model.load_state_dict(ckpt['model_state'])
+        lstm_detector.threshold = ckpt['threshold']
+        lstm_detector.model.to(lstm_detector.device)
+        print(f"  Loaded LSTM threshold: {lstm_detector.threshold:.6f}")
+    else:
+        print(f"\n[A.2] Generating {T_train}s of clean training data...")
+        process.set_seed(config.seed + 1000)
+        sim_train = process.simulate(T_train, seed=config.seed + 1000)
 
-    # --- Step 3: Train LSTM ---
-    print(f"\n[A.3] Training LSTM autoencoder...")
-    lstm_detector = LSTMDetector(N, config.lstm)
-    train_history = lstm_detector.train(clean_innovations, verbose=verbose)
-    print(f"  Final train loss: {train_history['train_losses'][-1]:.6f}")
-    print(f"  Threshold: {train_history['threshold']:.6f}")
+        ekf_train = ExtendedKalmanFilter(sys_cfg, ekf_cfg)
+        ekf_train.set_noise_covariances(Q_hat, R)
+        ekf_train_results = ekf_train.run_batch(sim_train['y_noisy'],
+                                                 sim_train['u'])
+        clean_innovations = ekf_train_results['std_innovation']
 
-    # Save LSTM model
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    torch.save({
-        'model_state': lstm_detector.model.state_dict(),
-        'threshold': lstm_detector.threshold,
-        'config': config.lstm,
-    }, RESULTS_DIR / "lstm_model.pt")
+        # --- Step 3: Train LSTM ---
+        print(f"\n[A.3] Training LSTM autoencoder...")
+        lstm_detector = LSTMDetector(N, config.lstm)
+        train_history = lstm_detector.train(clean_innovations, verbose=verbose)
+        print(f"  Final train loss: {train_history['train_losses'][-1]:.6f}")
+        print(f"  Threshold: {train_history['threshold']:.6f}")
 
-    # --- Step 4: Evaluate detection (Table 6) ---
+        # Save LSTM model
+        RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+        torch.save({
+            'model_state': lstm_detector.model.state_dict(),
+            'threshold': lstm_detector.threshold,
+            'config': config.lstm,
+        }, lstm_ckpt_path)
+
+    # --- Step 4: Evaluate detection (Table 6, skip if already done) ---
+    table6_path = RESULTS_DIR / "table6_detection.json"
+    if table6_path.exists() and lstm_ckpt_path.exists():
+        print(f"\n[A.4] table6_detection.json found — skipping detection evaluation.")
+        with open(table6_path) as f:
+            table6 = json.load(f)
+        return {
+            'lstm_detector': lstm_detector,
+            'calib': calib,
+            'table6': table6,
+        }
+
     print(f"\n[A.4] Evaluating detection performance...")
     table6 = {}
 
