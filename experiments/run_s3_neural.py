@@ -517,31 +517,55 @@ def run_phase_c(config: ExperimentConfig,
         print(f"  [GPU_MODE] T_eval={T_eval}, K_pgd={k_pgd_c}, "
               f"GAN sessions={n_gan_sessions}, device={DEVICE}")
 
-    # --- Step 1: Train GAN ---
-    print("\n[C.1] Training GAN evasion generator...")
+    # --- Step 1: Train GAN (or load from checkpoint) ---
+    gan_ckpt_path = RESULTS_DIR / "gan_model.pt"
     lstm_model = lstm_detector.get_model()
     lstm_model._threshold = lstm_detector.threshold
 
-    gan_trainer = train_evasion_gan(
-        sys_config=sys_cfg,
-        ekf_config=ekf_cfg,
-        cusum_config=config.cusum,
-        iswt_config=iswt_cfg,
-        gan_config=config.gan,
-        lstm_model=lstm_model,
-        lstm_config=config.lstm,
-        n_training_sessions=n_gan_sessions,
-        seed=config.seed,
-        verbose=verbose,
-    )
+    if gan_ckpt_path.exists():
+        print("\n[C.1] GAN checkpoint found — skipping training, loading from disk.")
+        from core.gan_evasion import EvasionGenerator, PipelineDiscriminator, GANTrainer
+        N_local = sys_cfg.n_sensors
+        ckpt_gan = torch.load(gan_ckpt_path, map_location='cpu')
+        generator = EvasionGenerator(N_local, config.gan)
+        discriminator = PipelineDiscriminator(N_local, hidden_dim=config.gan.hidden_dim)
+        generator.load_state_dict(ckpt_gan['generator_state'])
+        discriminator.load_state_dict(ckpt_gan['discriminator_state'])
+        gan_trainer = GANTrainer(
+            generator=generator,
+            discriminator=discriminator,
+            sys_config=sys_cfg,
+            ekf_config=ekf_cfg,
+            cusum_config=config.cusum,
+            iswt_config=iswt_cfg,
+            lstm_model=lstm_model,
+            lstm_config=config.lstm,
+            gan_config=config.gan,
+        )
+        gan_trainer.training_history = ckpt_gan.get('training_history', {})
+        print(f"  GAN loaded from {gan_ckpt_path}")
+    else:
+        print("\n[C.1] Training GAN evasion generator...")
+        gan_trainer = train_evasion_gan(
+            sys_config=sys_cfg,
+            ekf_config=ekf_cfg,
+            cusum_config=config.cusum,
+            iswt_config=iswt_cfg,
+            gan_config=config.gan,
+            lstm_model=lstm_model,
+            lstm_config=config.lstm,
+            n_training_sessions=n_gan_sessions,
+            seed=config.seed,
+            verbose=verbose,
+        )
 
-    # Save GAN model
-    torch.save({
-        'generator_state': gan_trainer.G.state_dict(),
-        'discriminator_state': gan_trainer.D.state_dict(),
-        'training_history': gan_trainer.training_history,
-        'config': config.gan,
-    }, RESULTS_DIR / "gan_model.pt")
+        # Save GAN model
+        torch.save({
+            'generator_state': gan_trainer.G.state_dict(),
+            'discriminator_state': gan_trainer.D.state_dict(),
+            'training_history': gan_trainer.training_history,
+            'config': config.gan,
+        }, gan_ckpt_path)
 
     # --- Step 2: Compare GAN vs PGD ---
     print("\n[C.2] Comparing GAN vs PGD...")
@@ -715,8 +739,14 @@ def main():
     lstm_detector = phase_a['lstm_detector']
     calib = phase_a['calib']
 
-    # Phase B: Adversarial PGD attacks on LSTM
-    phase_b = run_phase_b(config, lstm_detector, calib, verbose=True)
+    # Phase B: Adversarial PGD attacks on LSTM (skip if already done)
+    table7_path = RESULTS_DIR / "table7_adversarial_lstm.json"
+    if table7_path.exists() and table7_path.stat().st_size > 10:
+        print("\n[SKIP] table7_adversarial_lstm.json already exists — skipping Phase B.")
+        with open(table7_path) as f:
+            phase_b = {'table7': json.load(f)}
+    else:
+        phase_b = run_phase_b(config, lstm_detector, calib, verbose=True)
 
     # Phase C: GAN vs PGD comparison
     phase_c = run_phase_c(config, lstm_detector, calib, verbose=True)
