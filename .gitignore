@@ -15,6 +15,10 @@ swat/data/*.csv
 swat/data/*.xlsx
 swat/data/*.zip
 
+# Datasets
+batadal/dataset/
+swat/dataset/
+
 # Ignore Make logs
 *.log
 
@@ -22,3 +26,4 @@ swat/data/*.zip
 results/s1/
 results/s2/
 .DS_Store
+
