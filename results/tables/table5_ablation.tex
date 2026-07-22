@@ -1,17 +1,24 @@
 \begin{table}[t]
 \centering
-\caption{Ablation of detection pipeline components.
-S1, white-box TCA (full capability), $\epsilon = 0.75\,\sigma_\eta$.
-Mean $\pm$ std over 10 sessions.}
+\caption{Ablation of detection pipeline components across fault magnitudes.
+S1, white-box TCA, $\epsilon = 0.75\,\sigma_\eta$.}
 \label{tab:iwd_ablation}
 \small
-\begin{tabular}{@{}lcc@{}}
+\begin{tabular}{@{}llcc@{}}
 \toprule
-\textbf{Configuration} & \textbf{TPR (\%)} & \textbf{FPR (\%)} \\
+\textbf{Fault} & \textbf{Configuration} & \textbf{TPR (\%)} & \textbf{FPR (\%)} \\
 \midrule
-CUSUM only & 60.2$\pm$32.6\% & 11.8$\pm$3.6\% \\
-ISWT (IWD) only & 65.8$\pm$26.8\% & 31.2$\pm$14.8\% \\
-IWD$\vee$CUSUM (combined) & 71.7$\pm$23.3\% & 33.1$\pm$13.8\% \\
+$1.5\sigma_\eta$ & CUSUM only                & 52.8\% & 9.5\% \\
+$1.5\sigma_\eta$ & ISWT (IWD) only           & 14.8\% & 0.0\% \\
+$1.5\sigma_\eta$ & IWD$\vee$CUSUM (combined) & 52.8\% & 9.5\% \\
+\midrule
+$2.0\sigma_\eta$ & CUSUM only                & 90.6\% & 9.4\% \\
+$2.0\sigma_\eta$ & ISWT (IWD) only           & 60.0\% & 0.0\% \\
+$2.0\sigma_\eta$ & IWD$\vee$CUSUM (combined) & 90.6\% & 9.4\% \\
+\midrule
+$3.0\sigma_\eta$ & CUSUM only                & 100.0\% & 9.5\% \\
+$3.0\sigma_\eta$ & ISWT (IWD) only           & 100.0\% & 0.0\% \\
+$3.0\sigma_\eta$ & IWD$\vee$CUSUM (combined) & 100.0\% & 9.5\% \\
 \bottomrule
 \end{tabular}
 \end{table}

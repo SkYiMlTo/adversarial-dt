@@ -98,7 +98,7 @@ _FAST_GAN_SESSIONS = 10   # GAN training sessions
 # These are tuned to finish within ~2 hours on a modern NVIDIA GPU.
 _GPU_K_PGD        = 100   # Full PGD iterations
 _GPU_T_EVAL       = 600   # Full session length (600 steps = 10 min at 1 Hz)
-_GPU_FAULT_MULTS  = [1.0, 2.0, 3.0, 4.0]   # All fault magnitudes
+_GPU_FAULT_MULTS  = [0.5, 1.0, 2.0, 3.0, 4.0]   # All fault magnitudes
 _GPU_EPS_RATIOS   = [0.50, 1.00, 1.50]      # Budget sweep
 _GPU_GAN_SESSIONS = 50    # Full GAN training
 
@@ -132,6 +132,7 @@ def run_phase_a(config: ExperimentConfig,
                              seed=config.seed)
     ekf_cfg = calib['ekf_config']
     iswt_cfg = calib['iswt_config']
+    baseline_cov = calib['baseline_cov']
     Q_hat = calib['Q']
     R = calib['R']
 
@@ -141,55 +142,36 @@ def run_phase_a(config: ExperimentConfig,
     # Process model needed for both training and evaluation branches
     process = TwoTankProcess(sys_cfg)
 
-    # --- Step 2: Generate LSTM training data and train (or resume) ---
+    # --- Step 2: Generate LSTM training data and train ---
+    print(f"\n[A.2] Generating {T_train}s of clean training data...")
+    process.set_seed(config.seed + 1000)
+    sim_train = process.simulate(T_train, seed=config.seed + 1000)
+
+    ekf_train = ExtendedKalmanFilter(sys_cfg, ekf_cfg)
+    ekf_train.set_noise_covariances(Q_hat, R)
+    ekf_train_results = ekf_train.run_batch(sim_train['y_noisy'],
+                                             sim_train['u'])
+    clean_innovations = ekf_train_results['std_innovation']
+
+    # --- Step 3: Train LSTM ---
+    print(f"\n[A.3] Training LSTM autoencoder (hidden={config.lstm.hidden_dim}, "
+          f"latent={config.lstm.latent_dim}, epochs={config.lstm.n_epochs}, "
+          f"threshold_pct={config.lstm.threshold_percentile})...")
+    lstm_detector = LSTMDetector(N, config.lstm)
+    train_history = lstm_detector.train(clean_innovations, verbose=verbose)
+    print(f"  Final train loss: {train_history['train_losses'][-1]:.6f}")
+    print(f"  Threshold: {train_history['threshold']:.6f}")
+
+    # Save LSTM model
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     lstm_ckpt_path = RESULTS_DIR / "lstm_model.pt"
-    if lstm_ckpt_path.exists():
-        # Resume from checkpoint — skip expensive retraining
-        print(f"\n[A.2] Checkpoint found at {lstm_ckpt_path} — skipping training.")
-        lstm_detector = LSTMDetector(N, config.lstm)
-        ckpt = torch.load(lstm_ckpt_path, map_location='cpu')
-        lstm_detector.model.load_state_dict(ckpt['model_state'])
-        lstm_detector.threshold = ckpt['threshold']
-        lstm_detector.model.to(lstm_detector.device)
-        print(f"  Loaded LSTM threshold: {lstm_detector.threshold:.6f}")
-    else:
-        print(f"\n[A.2] Generating {T_train}s of clean training data...")
-        process.set_seed(config.seed + 1000)
-        sim_train = process.simulate(T_train, seed=config.seed + 1000)
+    torch.save({
+        'model_state': lstm_detector.model.state_dict(),
+        'threshold': lstm_detector.threshold,
+        'config': config.lstm,
+    }, lstm_ckpt_path)
 
-        ekf_train = ExtendedKalmanFilter(sys_cfg, ekf_cfg)
-        ekf_train.set_noise_covariances(Q_hat, R)
-        ekf_train_results = ekf_train.run_batch(sim_train['y_noisy'],
-                                                 sim_train['u'])
-        clean_innovations = ekf_train_results['std_innovation']
-
-        # --- Step 3: Train LSTM ---
-        print(f"\n[A.3] Training LSTM autoencoder...")
-        lstm_detector = LSTMDetector(N, config.lstm)
-        train_history = lstm_detector.train(clean_innovations, verbose=verbose)
-        print(f"  Final train loss: {train_history['train_losses'][-1]:.6f}")
-        print(f"  Threshold: {train_history['threshold']:.6f}")
-
-        # Save LSTM model
-        RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-        torch.save({
-            'model_state': lstm_detector.model.state_dict(),
-            'threshold': lstm_detector.threshold,
-            'config': config.lstm,
-        }, lstm_ckpt_path)
-
-    # --- Step 4: Evaluate detection (Table 6, skip if already done) ---
-    table6_path = RESULTS_DIR / "table6_detection.json"
-    if table6_path.exists() and lstm_ckpt_path.exists():
-        print(f"\n[A.4] table6_detection.json found — skipping detection evaluation.")
-        with open(table6_path) as f:
-            table6 = json.load(f)
-        return {
-            'lstm_detector': lstm_detector,
-            'calib': calib,
-            'table6': table6,
-        }
-
+    # --- Step 4: Evaluate detection (Table 6) ---
     print(f"\n[A.4] Evaluating detection performance...")
     table6 = {}
 
@@ -205,7 +187,7 @@ def run_phase_a(config: ExperimentConfig,
     cusum_clean_res = cusum_clean.run_batch(
         ekf_clean_results['std_innovation'])
 
-    iswt_clean = ISWTDetector(N, iswt_cfg)
+    iswt_clean = ISWTDetector(N, iswt_cfg, baseline_cov=baseline_cov)
     iswt_clean_res = iswt_clean.run_batch(
         ekf_clean_results['std_innovation'])
 
@@ -245,7 +227,7 @@ def run_phase_a(config: ExperimentConfig,
         cusum_fault_res = cusum_fault.run_batch(
             ekf_fault_results['std_innovation'])
 
-        iswt_fault = ISWTDetector(N, iswt_cfg)
+        iswt_fault = ISWTDetector(N, iswt_cfg, baseline_cov=baseline_cov)
         iswt_fault_res = iswt_fault.run_batch(
             ekf_fault_results['std_innovation'])
 
@@ -320,6 +302,7 @@ def run_phase_b(config: ExperimentConfig,
     N = sys_cfg.n_sensors
     ekf_cfg = calib['ekf_config']
     iswt_cfg = calib['iswt_config']
+    baseline_cov = calib['baseline_cov']
     Q_hat = calib['Q']
     R = calib['R']
     W = iswt_cfg.W
@@ -364,7 +347,7 @@ def run_phase_b(config: ExperimentConfig,
 
             Y_faulted = sim['y_faulted']
             U = sim['u']
-            epsilon = eps_ratio * sys_cfg.sigma
+            epsilon = eps_ratio * fault_mult * sys_cfg.sigma
 
             # Override K based on mode
             tca_cfg = config.tca
@@ -396,7 +379,7 @@ def run_phase_b(config: ExperimentConfig,
             cusum_std = CUSUMDetector(N, config.cusum)
             cusum_std_res = cusum_std.run_batch(
                 ekf_std_res['std_innovation'])
-            iswt_std = ISWTDetector(N, iswt_cfg)
+            iswt_std = ISWTDetector(N, iswt_cfg, baseline_cov=baseline_cov)
             iswt_std_res = iswt_std.run_batch(
                 ekf_std_res['std_innovation'])
             lstm_std_res = lstm_detector.run_batch(
@@ -432,7 +415,7 @@ def run_phase_b(config: ExperimentConfig,
             cusum_neural = CUSUMDetector(N, config.cusum)
             cusum_neural_res = cusum_neural.run_batch(
                 ekf_neural_res['std_innovation'])
-            iswt_neural = ISWTDetector(N, iswt_cfg)
+            iswt_neural = ISWTDetector(N, iswt_cfg, baseline_cov=baseline_cov)
             iswt_neural_res = iswt_neural.run_batch(
                 ekf_neural_res['std_innovation'])
             lstm_neural_res = lstm_detector.run_batch(
@@ -495,6 +478,7 @@ def run_phase_c(config: ExperimentConfig,
     N = sys_cfg.n_sensors
     ekf_cfg = calib['ekf_config']
     iswt_cfg = calib['iswt_config']
+    baseline_cov = calib['baseline_cov']
     Q_hat = calib['Q']
     R = calib['R']
     W = iswt_cfg.W
@@ -523,10 +507,10 @@ def run_phase_c(config: ExperimentConfig,
     lstm_model._threshold = lstm_detector.threshold
 
     if gan_ckpt_path.exists():
-        print("\n[C.1] GAN checkpoint found — skipping training, loading from disk.")
+        print("\n[C.1] GAN checkpoint found — loading from disk (uses current LSTM).")
         from core.gan_evasion import EvasionGenerator, PipelineDiscriminator, GANTrainer
         N_local = sys_cfg.n_sensors
-        ckpt_gan = torch.load(gan_ckpt_path, map_location='cpu')
+        ckpt_gan = torch.load(gan_ckpt_path, map_location='cpu', weights_only=False)
         generator = EvasionGenerator(N_local, config.gan)
         discriminator = PipelineDiscriminator(N_local, hidden_dim=config.gan.hidden_dim)
         generator.load_state_dict(ckpt_gan['generator_state'])
@@ -584,7 +568,7 @@ def run_phase_c(config: ExperimentConfig,
             print(f"\n  --- Fault={fault_mult}sigma, eps/sigma={eps_ratio} "
                   f"(budget left: {time_budget_remaining()/60:.1f} min) ---")
 
-            epsilon = eps_ratio * sys_cfg.sigma
+            epsilon = eps_ratio * fault_mult * sys_cfg.sigma
 
             # Generate evaluation data
             sim = process.simulate(T_eval, fault_config={
@@ -620,7 +604,8 @@ def run_phase_c(config: ExperimentConfig,
             # Evaluate PGD
             pgd_metrics = _evaluate_perturbation(
                 Y_faulted, U, delta_pgd, sys_cfg, ekf_cfg,
-                config.cusum, iswt_cfg, lstm_detector, Q_hat, R, W)
+                config.cusum, iswt_cfg, lstm_detector, Q_hat, R, W,
+                baseline_cov=baseline_cov)
 
             # --- GAN ---
             print("    Running GAN...")
@@ -640,7 +625,8 @@ def run_phase_c(config: ExperimentConfig,
             # Evaluate GAN
             gan_metrics = _evaluate_perturbation(
                 Y_faulted, U, delta_gan_full, sys_cfg, ekf_cfg,
-                config.cusum, iswt_cfg, lstm_detector, Q_hat, R, W)
+                config.cusum, iswt_cfg, lstm_detector, Q_hat, R, W,
+                baseline_cov=baseline_cov)
 
             table8[key] = {
                 'fault_mult': fault_mult,
@@ -682,7 +668,7 @@ def run_phase_c(config: ExperimentConfig,
 
 def _evaluate_perturbation(Y_faulted, U, delta, sys_cfg, ekf_cfg,
                            cusum_cfg, iswt_cfg, lstm_detector,
-                           Q_hat, R, W):
+                           Q_hat, R, W, baseline_cov=None):
     """Evaluate a perturbation against the full detection pipeline.
 
     Returns dict with TPR metrics.
@@ -697,7 +683,7 @@ def _evaluate_perturbation(Y_faulted, U, delta, sys_cfg, ekf_cfg,
     cusum = CUSUMDetector(N, cusum_cfg)
     cusum_res = cusum.run_batch(ekf_res['std_innovation'])
 
-    iswt = ISWTDetector(N, iswt_cfg)
+    iswt = ISWTDetector(N, iswt_cfg, baseline_cov=baseline_cov)
     iswt_res = iswt.run_batch(ekf_res['std_innovation'])
 
     lstm_res = lstm_detector.run_batch(ekf_res['std_innovation'])
@@ -739,14 +725,8 @@ def main():
     lstm_detector = phase_a['lstm_detector']
     calib = phase_a['calib']
 
-    # Phase B: Adversarial PGD attacks on LSTM (skip if already done)
-    table7_path = RESULTS_DIR / "table7_adversarial_lstm.json"
-    if table7_path.exists() and table7_path.stat().st_size > 10:
-        print("\n[SKIP] table7_adversarial_lstm.json already exists — skipping Phase B.")
-        with open(table7_path) as f:
-            phase_b = {'table7': json.load(f)}
-    else:
-        phase_b = run_phase_b(config, lstm_detector, calib, verbose=True)
+    # Phase B: Adversarial PGD attacks on LSTM
+    phase_b = run_phase_b(config, lstm_detector, calib, verbose=True)
 
     # Phase C: GAN vs PGD comparison
     phase_c = run_phase_c(config, lstm_detector, calib, verbose=True)

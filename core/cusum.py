@@ -79,6 +79,10 @@ class CUSUMDetector:
         # Alarm: G_i(t) > h
         self.alarm = self.G > self.cfg.h
 
+        # Page's CUSUM: reset accumulators upon alarm trigger
+        self.G_plus[self.alarm] = 0.0
+        self.G_minus[self.alarm] = 0.0
+
         return {
             'G': self.G.copy(),
             'alarm': self.alarm.copy(),

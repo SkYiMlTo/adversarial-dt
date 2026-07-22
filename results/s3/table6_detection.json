@@ -1,51 +1,51 @@
 {
   "fpr": {
-    "cusum_only": 0.095,
-    "iswt_only": 0.1275,
-    "lstm_only": 0.09,
-    "cusum_iswt": 0.1275,
-    "full_pipeline": 0.13
+    "cusum_only": 0.00909090909090909,
+    "iswt_only": 0.18727272727272729,
+    "lstm_only": 0.014545454545454545,
+    "cusum_iswt": 0.19090909090909092,
+    "full_pipeline": 0.19090909090909092
   },
   "tpr_0.5sigma": {
-    "cusum_only": 0.1725,
-    "iswt_only": 0.19,
-    "lstm_only": 0.0675,
-    "cusum_iswt": 0.19,
-    "full_pipeline": 0.19
+    "cusum_only": 0.0018181818181818182,
+    "iswt_only": 0.09272727272727273,
+    "lstm_only": 0.01090909090909091,
+    "cusum_iswt": 0.09272727272727273,
+    "full_pipeline": 0.09272727272727273
   },
   "tpr_1.0sigma": {
-    "cusum_only": 0.345,
-    "iswt_only": 0.0,
-    "lstm_only": 0.0675,
-    "cusum_iswt": 0.345,
-    "full_pipeline": 0.345
+    "cusum_only": 0.0018181818181818182,
+    "iswt_only": 0.09090909090909091,
+    "lstm_only": 0.01090909090909091,
+    "cusum_iswt": 0.09090909090909091,
+    "full_pipeline": 0.09090909090909091
   },
   "tpr_1.5sigma": {
-    "cusum_only": 0.4825,
-    "iswt_only": 0.0,
-    "lstm_only": 0.065,
-    "cusum_iswt": 0.4825,
-    "full_pipeline": 0.4825
+    "cusum_only": 0.0036363636363636364,
+    "iswt_only": 0.09272727272727273,
+    "lstm_only": 0.023636363636363636,
+    "cusum_iswt": 0.09454545454545454,
+    "full_pipeline": 0.09454545454545454
   },
   "tpr_2.0sigma": {
-    "cusum_only": 1.0,
-    "iswt_only": 0.0,
-    "lstm_only": 0.07,
-    "cusum_iswt": 1.0,
-    "full_pipeline": 1.0
+    "cusum_only": 0.03272727272727273,
+    "iswt_only": 0.3327272727272727,
+    "lstm_only": 0.056363636363636366,
+    "cusum_iswt": 0.3509090909090909,
+    "full_pipeline": 0.3509090909090909
   },
   "tpr_3.0sigma": {
-    "cusum_only": 1.0,
-    "iswt_only": 0.0,
-    "lstm_only": 0.105,
-    "cusum_iswt": 1.0,
-    "full_pipeline": 1.0
+    "cusum_only": 0.10727272727272727,
+    "iswt_only": 0.8054545454545454,
+    "lstm_only": 0.12181818181818181,
+    "cusum_iswt": 0.8254545454545454,
+    "full_pipeline": 0.8254545454545454
   },
   "tpr_4.0sigma": {
-    "cusum_only": 1.0,
-    "iswt_only": 0.1575,
-    "lstm_only": 0.12,
-    "cusum_iswt": 1.0,
+    "cusum_only": 0.18,
+    "iswt_only": 0.9981818181818182,
+    "lstm_only": 0.8145454545454546,
+    "cusum_iswt": 0.9981818181818182,
     "full_pipeline": 1.0
   }
 }

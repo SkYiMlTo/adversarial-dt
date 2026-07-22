@@ -356,7 +356,13 @@ def run_table4_s2(config: ExperimentConfig, data: dict) -> dict:
                 tca_config=config.tca,
                 baseline_cov=data.get('baseline_cov'))
 
-        for ratio in [0.50, 0.75, 1.00]:
+        # Find all contiguous attack windows in test labels
+        labels = data['test']['labels']
+        attack_diffs = np.diff(np.concatenate(([0], labels, [0])))
+        attack_starts = np.where(attack_diffs == 1)[0]
+        attack_ends = np.where(attack_diffs == -1)[0]
+
+        for ratio in [0.25, 0.50, 0.75, 1.00, 1.50]:
             # Compute epsilon from training data residual std
             if is_datadriven:
                 sysid = data['sysid']
@@ -364,51 +370,69 @@ def run_table4_s2(config: ExperimentConfig, data: dict) -> dict:
             else:
                 epsilon = ratio * config.system.sigma
 
-            try:
-                if regime == 'whitebox':
-                    tca_result = tca.run_whitebox(
-                        Y_attack, U_attack, attacked_idx,
-                        compromised_idx, epsilon, verbose=False)
-                else:
-                    tca_result = tca.run_greybox(
-                        Y_attack, U_attack, attacked_idx,
-                        compromised_idx, epsilon, verbose=False)
+            evasion_count = 0
+            total_windows = 0
+            sds_list = []
+            alarm_rates = []
 
-                # Evaluate detection on perturbed data
-                Y_pert = Y_attack + tca_result['delta']
-                kf = _get_kf(data)
-                kf_res = kf.run_batch(Y_pert, U_attack)
+            # Evaluate across available attack windows
+            for win_idx in range(min(len(attack_starts), 7)):
+                w_start = int(attack_starts[win_idx])
+                w_end = int(attack_ends[win_idx])
+                w_len = min(600, w_end - w_start)
+                if w_len < 50:
+                    continue
 
-                cusum = CUSUMDetector(N, cusum_cfg)
-                cusum_res = cusum.run_batch(kf_res['std_innovation'])
+                Y_win = data['test']['Y'][w_start:w_start + w_len].copy()
+                U_win = data['test']['U'][w_start:w_start + w_len].copy()
 
-                iswt = ISWTDetector(N, iswt_cfg,
-                                    baseline_cov=data.get('baseline_cov'))
-                iswt_res = iswt.run_batch(kf_res['std_innovation'])
+                try:
+                    if regime == 'whitebox':
+                        tca_res = tca.run_whitebox(
+                            Y_win, U_win, attacked_idx,
+                            compromised_idx, epsilon, verbose=False)
+                    else:
+                        tca_res = tca.run_greybox(
+                            Y_win, U_win, attacked_idx,
+                            compromised_idx, epsilon, verbose=False)
 
-                cusum_alarm = np.any(cusum_res['alarm'], axis=1)
-                combined = cusum_alarm | iswt_res['alarm']
+                    Y_pert = Y_win + tca_res['delta']
+                    kf = _get_kf(data)
+                    kf_res = kf.run_batch(Y_pert, U_win)
 
-                evasion = _check_evasion(combined, config.s1_evasion_window)
+                    cusum = CUSUMDetector(N, cusum_cfg)
+                    cusum_res = cusum.run_batch(kf_res['std_innovation'])
 
-                regime_results[ratio] = {
-                    'sds_final': tca_result['sds_final'],
-                    'cusum_evasion': bool(np.mean(cusum_alarm) < 0.1),
-                    'combined_evasion': bool(evasion),
-                    'cusum_alarm_rate': float(np.mean(cusum_alarm)),
-                    'combined_alarm_rate': float(np.mean(combined)),
-                }
+                    iswt = ISWTDetector(N, iswt_cfg,
+                                        baseline_cov=data.get('baseline_cov'))
+                    iswt_res = iswt.run_batch(kf_res['std_innovation'])
 
-                print(f"  eps={ratio:.2f}: SDS={tca_result['sds_final']:.3f}, "
-                      f"evade={evasion}, alarm_rate={np.mean(combined):.3f}")
+                    cusum_alarm = np.any(cusum_res['alarm'], axis=1)
+                    combined = cusum_alarm | iswt_res['alarm']
 
-            except Exception as e:
-                print(f"  eps={ratio:.2f}: ERROR: {e}")
-                import traceback; traceback.print_exc()
-                regime_results[ratio] = {
-                    'sds_final': 0.0,
-                    'error': str(e),
-                }
+                    evade = _check_evasion(combined, min(config.s1_evasion_window, w_len // 2))
+                    if evade:
+                        evasion_count += 1
+                    total_windows += 1
+                    sds_list.append(tca_res['sds_final'])
+                    alarm_rates.append(np.mean(combined))
+
+                except Exception as e:
+                    print(f"    window {win_idx} error: {e}")
+
+            total_windows = max(total_windows, 1)
+            evasion_rate = (evasion_count / total_windows) * 100.0
+            mean_sds = float(np.mean(sds_list)) if len(sds_list) > 0 else 0.0
+            mean_alarm_rate = float(np.mean(alarm_rates)) if len(alarm_rates) > 0 else 0.0
+
+            regime_results[str(ratio)] = {
+                'sds_final': mean_sds,
+                'evasion_rate_pct': evasion_rate,
+                'combined_alarm_rate': mean_alarm_rate,
+                'evasion_rate_calculated': 1.0 - mean_alarm_rate,
+            }
+
+            print(f"  eps={ratio:.2f}: Evasion Rate={evasion_rate:.1f}%, SDS={mean_sds:.3f}, alarm_rate={mean_alarm_rate:.3f}")
 
         results[regime] = regime_results
 

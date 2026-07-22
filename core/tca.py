@@ -110,7 +110,8 @@ class TargetedConsistencyAttack:
         valid_start = min(W, T)
         if T > valid_start:
             ratio = W * lambda_iw[valid_start:] / max(critical, 1e-6)
-            iswt_penalty = torch.mean(torch.exp(ratio - 1.0))
+            ratio = torch.clamp(ratio - 1.0, min=-20.0, max=20.0)
+            iswt_penalty = torch.mean(torch.exp(ratio))
         else:
             iswt_penalty = torch.tensor(0.0, dtype=G.dtype, device=G.device)
 
@@ -560,7 +561,7 @@ class TargetedConsistencyAttack:
         mask[attacked_idx] = 1.0
 
         # Block size for temporal resolution (larger = fewer FD evals)
-        block_size = max(50, T // 10)
+        block_size = max(200, T // 3)
 
         best_delta_global = None
         best_sds_global = -1.0
@@ -740,7 +741,8 @@ class TargetedConsistencyAttack:
         valid_start = min(W, T)
         if T > valid_start:
             ratio = iswt_results['test_stat'][valid_start:] / max(critical, 1e-6)
-            iswt_pen = np.mean(np.exp(ratio - 1.0))
+            ratio = np.clip(ratio - 1.0, -20.0, 20.0)
+            iswt_pen = np.mean(np.exp(ratio))
         else:
             iswt_pen = 0.0
 

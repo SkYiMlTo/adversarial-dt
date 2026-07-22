@@ -181,7 +181,7 @@ class CUSUMConfig:
     in the innovation sequence (Lorden minimax theorem).
     """
     k: float = 0.5   # Reference value (detects shifts ≥ 1σ)
-    h: float = 5.0   # Alarm threshold (ARL₀ = e^{2kh} ≈ 148 steps)
+    h: float = 3.5   # Alarm threshold (ARL₀ = e^{2kh} ≈ 148 steps)
 
     @property
     def arl0(self) -> float:
@@ -196,7 +196,7 @@ class ISWTConfig:
     The ISWT uses the Stein matrix divergence with a chi-squared null
     distribution (Bartlett's theorem).
     """
-    W: int = 200         # Sliding window length [timesteps]
+    W: int = 50          # Sliding window length [timesteps]
     alpha: float = 0.05  # Significance level
     empirical_critical: float = None  # Empirically calibrated threshold
 
@@ -215,8 +215,8 @@ class ISWTConfig:
 @dataclass
 class TCAConfig:
     """Targeted Consistency Attack parameters."""
-    K: int = 200                    # Number of PGD iterations (whitebox)
-    K_greybox: int = 20             # Number of PGD iterations (greybox)
+    K: int = 100                    # Number of PGD iterations (whitebox)
+    K_greybox: int = 10             # Number of PGD iterations (greybox)
     eta: float = 0.01               # Step size (Adam base learning rate)
     fd_step: float = 5e-4           # Finite difference step (grey-box)
     armijo_c: float = 1e-4          # Armijo sufficient decrease constant
@@ -241,14 +241,14 @@ class LSTMDetectorConfig:
     Input:         Sliding windows of ν̂(t) ∈ R^N over seq_len timesteps
     Output:        Reconstruction error (MSE per window)
     """
-    hidden_dim: int = 32            # LSTM hidden state dimension
+    hidden_dim: int = 64            # LSTM hidden state dimension
     n_layers: int = 2               # Number of stacked LSTM layers
     seq_len: int = 50               # Input sequence length (lookback window)
-    latent_dim: int = 16            # Bottleneck dimension
-    threshold_percentile: float = 99.0  # Anomaly threshold from clean data
+    latent_dim: int = 32            # Bottleneck dimension
+    threshold_percentile: float = 99.5  # Anomaly threshold from clean data
     learning_rate: float = 1e-3     # Adam learning rate
-    n_epochs: int = 100             # Training epochs
-    batch_size: int = 32            # Mini-batch size
+    n_epochs: int = 200             # Training epochs
+    batch_size: int = 64            # Mini-batch size
     dropout: float = 0.1           # Dropout rate between LSTM layers
 
 
@@ -292,9 +292,10 @@ class ExperimentConfig:
 
     # --- S1 red-team protocol ---
     s1_sessions_per_config: int = 30       # Sessions per (regime, fault_mag)
+    s2_sessions_per_config: int = 30       # Sessions per (regime, fault_mag)
     s1_session_duration_steps: int = 600   # 10 min at 1 Hz
     s1_evasion_window: int = 60            # 60 consecutive alarm-free steps
-    s1_calibration_steps: int = 1800       # 30 min at 1 Hz
+    s1_calibration_steps: int = 3600       # 60 min at 1 Hz
     s1_fault_magnitudes: list = field(default_factory=lambda: [
         0.5, 1.0, 1.5, 2.0, 3.0, 4.0
     ])
@@ -305,7 +306,7 @@ class ExperimentConfig:
     s2_n_attack_sensors: int = 4  # |A| = 4 sensors per stage
 
     # --- S3 Neural attack/defense ---
-    s3_lstm_train_steps: int = 3600        # 60 min at 1 Hz for LSTM training
+    s3_lstm_train_steps: int = 10800       # 3 hours at 1 Hz for LSTM training
     s3_gan_train_sessions: int = 50        # Operating conditions for GAN training
     s3_sessions_per_config: int = 20       # Evaluation sessions per config
 

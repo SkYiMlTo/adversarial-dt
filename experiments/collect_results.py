@@ -46,14 +46,14 @@ def collect_table1():
     for regime in ['whitebox', 'greybox']:
         regime_label = 'White-box (TCA)' if regime == 'whitebox' else 'Grey-box'
         for fault in [0.5, 1.0, 1.5, 2.0, 3.0, 4.0]:
-            key = str((regime, fault))
+            key = str(('adaptive', regime, fault))
             if key in data:
                 d = data[key]
                 lines.append(
                     f"{regime_label:15s} & ${fault:.1f}\\sigma_\\eta$ & "
                     f"{format_pct(d['cusum_evasion_rate'])}\\% & "
                     f"{format_pct(d['combined_evasion_rate'])}\\% & "
-                    f"{d['n_sessions']} \\\\"
+                    f"{d['sds_mean']:.3f} \\\\"
                 )
         if regime == 'whitebox':
             lines.append(r"\midrule")
@@ -122,39 +122,34 @@ def collect_table5():
     lines = [
         r"\begin{table}[t]",
         r"\centering",
-        r"\caption{Ablation of detection pipeline components.",
-        r"S1, white-box TCA (full capability), $\epsilon = 0.75\,\sigma_\eta$.",
-        r"Mean $\pm$ std over 10 sessions.}",
+        r"\caption{Ablation of detection pipeline components across fault magnitudes.",
+        r"S1, white-box TCA, $\epsilon = 0.75\,\sigma_\eta$.}",
         r"\label{tab:iwd_ablation}",
         r"\small",
-        r"\begin{tabular}{@{}lcc@{}}",
+        r"\begin{tabular}{@{}llcc@{}}",
         r"\toprule",
-        r"\textbf{Configuration} & \textbf{TPR (\%)} & \textbf{FPR (\%)} \\",
+        r"\textbf{Fault} & \textbf{Configuration} & \textbf{TPR (\%)} & \textbf{FPR (\%)} \\",
         r"\midrule",
     ]
 
-    for key, label in [
-        ('cusum_only', 'CUSUM only'),
-        ('iswt_only', 'ISWT (IWD) only'),
-        ('combined', r'IWD$\vee$CUSUM (combined)'),
+    for fault_key, fault_label in [
+        ('fault_1.5sigma', '$1.5\\sigma_\\eta$'),
+        ('fault_2.0sigma', '$2.0\\sigma_\\eta$'),
+        ('fault_3.0sigma', '$3.0\\sigma_\\eta$'),
     ]:
-        d = data.get(key, {})
+        fault_data = data.get(fault_key, {})
+        for comp_key, comp_label in [
+            ('cusum_only', 'CUSUM only'),
+            ('iswt_only', 'ISWT (IWD) only'),
+            ('combined', r'IWD$\vee$CUSUM (combined)'),
+        ]:
+            d = fault_data.get(comp_key, {})
+            tpr = d.get('tpr', 0)
+            fpr = d.get('fpr', 0)
+            lines.append(f"{fault_label:15s} & {comp_label:25s} & {format_pct(tpr)}\\% & {format_pct(fpr)}\\% \\\\")
+        lines.append(r"\midrule")
 
-        # Handle both old (no std) and new (with std) format
-        tpr = d.get('tpr', 0)
-        fpr = d.get('fpr', 0)
-        tpr_std = d.get('tpr_std', None)
-        fpr_std = d.get('fpr_std', None)
-
-        if tpr_std is not None:
-            tpr_str = f"{format_pct(tpr)}$\\pm${format_pct(tpr_std)}\\%"
-            fpr_str = f"{format_pct(fpr)}$\\pm${format_pct(fpr_std)}\\%"
-        else:
-            tpr_str = f"{format_pct(tpr)}\\%"
-            fpr_str = f"{format_pct(fpr)}\\%"
-
-        lines.append(f"{label} & {tpr_str} & {fpr_str} \\\\")
-
+    lines.pop() # remove last midrule
     lines += [r"\bottomrule", r"\end{tabular}", r"\end{table}"]
     return "\n".join(lines)
 
