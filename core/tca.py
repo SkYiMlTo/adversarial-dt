@@ -50,18 +50,20 @@ class TargetedConsistencyAttack:
     """
 
     def __init__(self,
-                 sys_config: Optional[SystemConfig] = None,
-                 ekf_config: Optional[EKFConfig] = None,
-                 cusum_config: Optional[CUSUMConfig] = None,
-                 iswt_config: Optional[ISWTConfig] = None,
-                 tca_config: Optional[TCAConfig] = None,
-                 baseline_cov: Optional[np.ndarray] = None):
-        self.sys = sys_config or SystemConfig()
-        self.ekf_cfg = ekf_config or EKFConfig()
-        self.cusum_cfg = cusum_config or CUSUMConfig()
-        self.iswt_cfg = iswt_config or ISWTConfig()
-        self.tca_cfg = tca_config or TCAConfig()
+                 sys_config: SystemConfig,
+                 ekf_config: EKFConfig,
+                 cusum_config: CUSUMConfig,
+                 iswt_config: ISWTConfig,
+                 tca_config: TCAConfig,
+                 baseline_cov: Optional[np.ndarray] = None,
+                 kf_model=None):
+        self.sys = sys_config
+        self.ekf_cfg = ekf_config
+        self.cusum_cfg = cusum_config
+        self.iswt_cfg = iswt_config
+        self.tca_cfg = tca_config
         self.baseline_cov = baseline_cov
+        self.kf_model = kf_model
 
     # ------------------------------------------------------------------
     # Smooth surrogate loss (shared between whitebox and neural)
@@ -194,8 +196,12 @@ class TargetedConsistencyAttack:
         mask = torch.zeros(N, dtype=torch.float64, device=device)
         mask[attacked_idx] = 1.0
 
-        # Differentiable EKF (on same device)
-        diff_ekf = DifferentiableEKF(self.sys, self.ekf_cfg, device=device)
+        # Differentiable EKF or DataDrivenKF (on same device)
+        if hasattr(self, 'kf_model') and self.kf_model is not None:
+            from .data_driven_kf import DifferentiableDataDrivenKF
+            diff_ekf = DifferentiableDataDrivenKF(self.kf_model, device=device)
+        else:
+            diff_ekf = DifferentiableEKF(self.sys, self.ekf_cfg, device=device)
 
         # Adam optimizer state
         m = torch.zeros_like(delta)  # First moment
@@ -698,9 +704,12 @@ class TargetedConsistencyAttack:
         # Apply perturbation
         Y_pert = Y + delta
 
-        # Run EKF
-        ekf = ExtendedKalmanFilter(self.sys, self.ekf_cfg)
-        ekf_results = ekf.run_batch(Y_pert, U)
+        # Run EKF or DataDrivenKF
+        if hasattr(self, 'kf_model') and self.kf_model is not None:
+            ekf_results = self.kf_model.run_batch(Y_pert, U)
+        else:
+            ekf = ExtendedKalmanFilter(self.sys, self.ekf_cfg)
+            ekf_results = ekf.run_batch(Y_pert, U)
 
         # Run CUSUM
         cusum = CUSUMDetector(N, self.cusum_cfg)

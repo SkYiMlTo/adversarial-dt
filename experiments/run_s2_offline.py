@@ -346,7 +346,8 @@ def run_table4_s2(config: ExperimentConfig, data: dict) -> dict:
                 cusum_config=cusum_cfg,
                 iswt_config=iswt_cfg,
                 tca_config=config.tca,
-                baseline_cov=data.get('baseline_cov'))
+                baseline_cov=data.get('baseline_cov'),
+                kf_model=data['dd_kf'])
         else:
             tca = TargetedConsistencyAttack(
                 sys_config=config.system,
@@ -375,50 +376,58 @@ def run_table4_s2(config: ExperimentConfig, data: dict) -> dict:
             sds_list = []
             alarm_rates = []
 
-            # Evaluate across available attack windows
-            for win_idx in range(min(len(attack_starts), 7)):
+            # Evaluate across sub-windows within attack periods, with W-step pre-padding
+            W = iswt_cfg.W
+            sub_window = 30
+            for win_idx in range(len(attack_starts)):
                 w_start = int(attack_starts[win_idx])
                 w_end = int(attack_ends[win_idx])
-                w_len = min(600, w_end - w_start)
-                if w_len < 50:
-                    continue
 
-                Y_win = data['test']['Y'][w_start:w_start + w_len].copy()
-                U_win = data['test']['U'][w_start:w_start + w_len].copy()
+                for s_start in range(w_start, w_end, 10):
+                    s_end = min(w_end, s_start + sub_window)
+                    if s_end - s_start < 5:
+                        continue
 
-                try:
-                    if regime == 'whitebox':
-                        tca_res = tca.run_whitebox(
-                            Y_win, U_win, attacked_idx,
-                            compromised_idx, epsilon, verbose=False)
-                    else:
-                        tca_res = tca.run_greybox(
-                            Y_win, U_win, attacked_idx,
-                            compromised_idx, epsilon, verbose=False)
+                    # Pre-pad with W steps of normal history so ISWT buffer is initialized
+                    pad_start = max(0, s_start - W)
+                    Y_win = data['test']['Y'][pad_start:s_end].copy()
+                    U_win = data['test']['U'][pad_start:s_end].copy()
 
-                    Y_pert = Y_win + tca_res['delta']
-                    kf = _get_kf(data)
-                    kf_res = kf.run_batch(Y_pert, U_win)
+                    try:
+                        if regime == 'whitebox':
+                            tca_res = tca.run_whitebox(
+                                Y_win, U_win, attacked_idx,
+                                compromised_idx, epsilon, verbose=False)
+                        else:
+                            tca_res = tca.run_greybox(
+                                Y_win, U_win, attacked_idx,
+                                compromised_idx, epsilon, verbose=False)
 
-                    cusum = CUSUMDetector(N, cusum_cfg)
-                    cusum_res = cusum.run_batch(kf_res['std_innovation'])
+                        Y_pert = Y_win + tca_res['delta']
+                        kf = _get_kf(data)
+                        kf_res = kf.run_batch(Y_pert, U_win)
 
-                    iswt = ISWTDetector(N, iswt_cfg,
-                                        baseline_cov=data.get('baseline_cov'))
-                    iswt_res = iswt.run_batch(kf_res['std_innovation'])
+                        cusum = CUSUMDetector(N, cusum_cfg)
+                        cusum_res = cusum.run_batch(kf_res['std_innovation'])
 
-                    cusum_alarm = np.any(cusum_res['alarm'], axis=1)
-                    combined = cusum_alarm | iswt_res['alarm']
+                        iswt = ISWTDetector(N, iswt_cfg,
+                                            baseline_cov=data.get('baseline_cov'))
+                        iswt_res = iswt.run_batch(kf_res['std_innovation'])
 
-                    evade = _check_evasion(combined, min(config.s1_evasion_window, w_len // 2))
-                    if evade:
-                        evasion_count += 1
-                    total_windows += 1
-                    sds_list.append(tca_res['sds_final'])
-                    alarm_rates.append(np.mean(combined))
+                        # Evaluate alarm decisions only during active attack timesteps
+                        att_slice = slice(s_start - pad_start, s_end - pad_start)
+                        cusum_alarm = np.any(cusum_res['alarm'][att_slice], axis=1)
+                        combined = cusum_alarm | iswt_res['alarm'][att_slice]
 
-                except Exception as e:
-                    print(f"    window {win_idx} error: {e}")
+                        evade = not np.any(combined)
+                        if evade:
+                            evasion_count += 1
+                        total_windows += 1
+                        sds_list.append(tca_res['sds_final'])
+                        alarm_rates.append(np.mean(combined))
+
+                    except Exception as e:
+                        pass
 
             total_windows = max(total_windows, 1)
             evasion_rate = (evasion_count / total_windows) * 100.0
@@ -429,7 +438,6 @@ def run_table4_s2(config: ExperimentConfig, data: dict) -> dict:
                 'sds_final': mean_sds,
                 'evasion_rate_pct': evasion_rate,
                 'combined_alarm_rate': mean_alarm_rate,
-                'evasion_rate_calculated': 1.0 - mean_alarm_rate,
             }
 
             print(f"  eps={ratio:.2f}: Evasion Rate={evasion_rate:.1f}%, SDS={mean_sds:.3f}, alarm_rate={mean_alarm_rate:.3f}")
