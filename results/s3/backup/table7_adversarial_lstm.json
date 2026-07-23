@@ -1,0 +1,242 @@
+{
+  "0.5sigma_eps0.5": {
+    "fault_mult": 0.5,
+    "eps_ratio": 0.5,
+    "tca_standard": {
+      "sds": 0.02394840590096224,
+      "cusum_iswt_tpr": 0.09636363636363636,
+      "full_tpr": 0.09636363636363636,
+      "lstm_tpr": 0.05090909090909091
+    },
+    "tca_neural": {
+      "sds": 0.020318798601535563,
+      "cusum_iswt_tpr": 0.1,
+      "full_tpr": 0.1,
+      "lstm_tpr": 0.04
+    }
+  },
+  "0.5sigma_eps1.0": {
+    "fault_mult": 0.5,
+    "eps_ratio": 1.0,
+    "tca_standard": {
+      "sds": 0.13930915891082116,
+      "cusum_iswt_tpr": 0.09636363636363636,
+      "full_tpr": 0.33090909090909093,
+      "lstm_tpr": 0.31636363636363635
+    },
+    "tca_neural": {
+      "sds": 0.1061053269792962,
+      "cusum_iswt_tpr": 0.10909090909090909,
+      "full_tpr": 0.10909090909090909,
+      "lstm_tpr": 0.08
+    }
+  },
+  "0.5sigma_eps1.5": {
+    "fault_mult": 0.5,
+    "eps_ratio": 1.5,
+    "tca_standard": {
+      "sds": 0.254997220648646,
+      "cusum_iswt_tpr": 0.17636363636363636,
+      "full_tpr": 0.990909090909091,
+      "lstm_tpr": 0.990909090909091
+    },
+    "tca_neural": {
+      "sds": 0.18435020875755723,
+      "cusum_iswt_tpr": 0.13636363636363635,
+      "full_tpr": 0.15454545454545454,
+      "lstm_tpr": 0.12
+    }
+  },
+  "1.0sigma_eps0.5": {
+    "fault_mult": 1.0,
+    "eps_ratio": 0.5,
+    "tca_standard": {
+      "sds": 0.16392887644946738,
+      "cusum_iswt_tpr": 0.09454545454545454,
+      "full_tpr": 0.5981818181818181,
+      "lstm_tpr": 0.5690909090909091
+    },
+    "tca_neural": {
+      "sds": 0.12672624772716842,
+      "cusum_iswt_tpr": 0.11090909090909092,
+      "full_tpr": 0.11090909090909092,
+      "lstm_tpr": 0.034545454545454546
+    }
+  },
+  "1.0sigma_eps1.0": {
+    "fault_mult": 1.0,
+    "eps_ratio": 1.0,
+    "tca_standard": {
+      "sds": 0.32658666961134375,
+      "cusum_iswt_tpr": 0.24363636363636362,
+      "full_tpr": 1.0,
+      "lstm_tpr": 1.0
+    },
+    "tca_neural": {
+      "sds": 0.24143346501361654,
+      "cusum_iswt_tpr": 0.14727272727272728,
+      "full_tpr": 0.17636363636363636,
+      "lstm_tpr": 0.12727272727272726
+    }
+  },
+  "1.0sigma_eps1.5": {
+    "fault_mult": 1.0,
+    "eps_ratio": 1.5,
+    "tca_standard": {
+      "sds": 0.4116603306936586,
+      "cusum_iswt_tpr": 0.31636363636363635,
+      "full_tpr": 1.0,
+      "lstm_tpr": 1.0
+    },
+    "tca_neural": {
+      "sds": 0.27331486133123756,
+      "cusum_iswt_tpr": 0.20363636363636364,
+      "full_tpr": 0.22363636363636363,
+      "lstm_tpr": 0.16545454545454547
+    }
+  },
+  "2.0sigma_eps0.5": {
+    "fault_mult": 2.0,
+    "eps_ratio": 0.5,
+    "tca_standard": {
+      "sds": 0.2932783038614835,
+      "cusum_iswt_tpr": 0.31636363636363635,
+      "full_tpr": 1.0,
+      "lstm_tpr": 1.0
+    },
+    "tca_neural": {
+      "sds": 0.23031619776278292,
+      "cusum_iswt_tpr": 0.16545454545454547,
+      "full_tpr": 0.18,
+      "lstm_tpr": 0.13090909090909092
+    }
+  },
+  "2.0sigma_eps1.0": {
+    "fault_mult": 2.0,
+    "eps_ratio": 1.0,
+    "tca_standard": {
+      "sds": 0.4494648666861516,
+      "cusum_iswt_tpr": 0.4218181818181818,
+      "full_tpr": 1.0,
+      "lstm_tpr": 1.0
+    },
+    "tca_neural": {
+      "sds": 0.256705205597404,
+      "cusum_iswt_tpr": 0.2545454545454545,
+      "full_tpr": 0.33090909090909093,
+      "lstm_tpr": 0.2
+    }
+  },
+  "2.0sigma_eps1.5": {
+    "fault_mult": 2.0,
+    "eps_ratio": 1.5,
+    "tca_standard": {
+      "sds": 0.47074188691317825,
+      "cusum_iswt_tpr": 0.5381818181818182,
+      "full_tpr": 1.0,
+      "lstm_tpr": 1.0
+    },
+    "tca_neural": {
+      "sds": 0.24340351496611076,
+      "cusum_iswt_tpr": 0.24181818181818182,
+      "full_tpr": 0.4527272727272727,
+      "lstm_tpr": 0.3709090909090909
+    }
+  },
+  "3.0sigma_eps0.5": {
+    "fault_mult": 3.0,
+    "eps_ratio": 0.5,
+    "tca_standard": {
+      "sds": 0.23185417742239417,
+      "cusum_iswt_tpr": 0.32727272727272727,
+      "full_tpr": 1.0,
+      "lstm_tpr": 0.9963636363636363
+    },
+    "tca_neural": {
+      "sds": 0.1579824336974804,
+      "cusum_iswt_tpr": 0.2781818181818182,
+      "full_tpr": 0.38181818181818183,
+      "lstm_tpr": 0.24181818181818182
+    }
+  },
+  "3.0sigma_eps1.0": {
+    "fault_mult": 3.0,
+    "eps_ratio": 1.0,
+    "tca_standard": {
+      "sds": 0.40124814203823955,
+      "cusum_iswt_tpr": 0.5527272727272727,
+      "full_tpr": 1.0,
+      "lstm_tpr": 1.0
+    },
+    "tca_neural": {
+      "sds": 0.2515014329846525,
+      "cusum_iswt_tpr": 0.19454545454545455,
+      "full_tpr": 0.2545454545454545,
+      "lstm_tpr": 0.19636363636363635
+    }
+  },
+  "3.0sigma_eps1.5": {
+    "fault_mult": 3.0,
+    "eps_ratio": 1.5,
+    "tca_standard": {
+      "sds": 0.45084646412796225,
+      "cusum_iswt_tpr": 0.6618181818181819,
+      "full_tpr": 1.0,
+      "lstm_tpr": 1.0
+    },
+    "tca_neural": {
+      "sds": 0.29443662639766793,
+      "cusum_iswt_tpr": 0.18,
+      "full_tpr": 0.28545454545454546,
+      "lstm_tpr": 0.24181818181818182
+    }
+  },
+  "4.0sigma_eps0.5": {
+    "fault_mult": 4.0,
+    "eps_ratio": 0.5,
+    "tca_standard": {
+      "sds": 0.13212507336899906,
+      "cusum_iswt_tpr": 0.3690909090909091,
+      "full_tpr": 1.0,
+      "lstm_tpr": 1.0
+    },
+    "tca_neural": {
+      "sds": 0.04978362060988761,
+      "cusum_iswt_tpr": 0.5418181818181819,
+      "full_tpr": 0.5981818181818181,
+      "lstm_tpr": 0.5145454545454545
+    }
+  },
+  "4.0sigma_eps1.0": {
+    "fault_mult": 4.0,
+    "eps_ratio": 1.0,
+    "tca_standard": {
+      "sds": 0.4383136059306232,
+      "cusum_iswt_tpr": 0.4618181818181818,
+      "full_tpr": 1.0,
+      "lstm_tpr": 1.0
+    },
+    "tca_neural": {
+      "sds": 0.25599320325604646,
+      "cusum_iswt_tpr": 0.22,
+      "full_tpr": 0.39454545454545453,
+      "lstm_tpr": 0.3527272727272727
+    }
+  },
+  "4.0sigma_eps1.5": {
+    "fault_mult": 4.0,
+    "eps_ratio": 1.5,
+    "tca_standard": {
+      "sds": 0.3435868456546231,
+      "cusum_iswt_tpr": 0.7890909090909091,
+      "full_tpr": 1.0,
+      "lstm_tpr": 1.0
+    },
+    "tca_neural": {
+      "sds": 0.291209431263635,
+      "cusum_iswt_tpr": 0.13818181818181818,
+      "full_tpr": 0.19818181818181818,
+      "lstm_tpr": 0.18
+    }
+  }
+}

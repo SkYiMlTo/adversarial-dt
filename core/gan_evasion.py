@@ -327,45 +327,82 @@ class GANTrainer:
         Returns:
             List of scenario dictionaries with Y, U, fault info.
         """
-        from .process_model import TwoTankProcess
+        from pathlib import Path
+        from batadal.batadal_adapter import load_batadal_dataset
+
+        batadal_dir = Path(__file__).resolve().parent.parent / "batadal" / "dataset"
+        use_batadal = False
+        batadal_data = None
+        if (batadal_dir / "BATADAL_dataset03.csv").exists():
+            try:
+                batadal_data = load_batadal_dataset(str(batadal_dir), mode='normal')
+                use_batadal = True
+            except Exception as e:
+                print(f"Warning: Failed to load BATADAL dataset for GAN training ({e})")
 
         rng = np.random.RandomState(seed)
         scenarios = []
         seq_len = self.gan_cfg.seq_len
 
-        for i in range(n_sessions):
-            process = TwoTankProcess(self.sys)
-            s = rng.randint(0, 100000)
-            process.set_seed(s)
+        if use_batadal and batadal_data is not None:
+            Y_clean_full = batadal_data['Y']
+            U_clean_full = batadal_data['U']
+            max_start = len(Y_clean_full) - (seq_len + 100)
 
-            # Random fault magnitude (1σ to 4σ)
-            fault_mag = rng.uniform(1.0, 4.0)
+            for i in range(n_sessions):
+                fault_mag = rng.uniform(1.0, 4.0)
+                attack_sensor = rng.randint(0, self.sys.n_sensors)
+                start_idx = rng.randint(0, max_start) if max_start > 0 else 0
 
-            # Random attacked sensor
-            attack_sensor = rng.randint(0, self.sys.n_sensors)
+                # Extract window
+                Y = Y_clean_full[start_idx + 50 : start_idx + 50 + seq_len].copy()
+                U = U_clean_full[start_idx + 50 : start_idx + 50 + seq_len].copy()
 
-            sim = process.simulate(
-                seq_len + 100,  # Extra for EKF warm-up
-                fault_config={
-                    'sensor_idx': [attack_sensor],
-                    'fault_start': 0,
-                    'fault_magnitude': fault_mag,
-                },
-                seed=s
-            )
+                # Inject fault
+                Y[:, attack_sensor] += fault_mag * self.sys.sigma[attack_sensor]
 
-            # Take a window after warm-up
-            start = 50
-            Y = sim['y_faulted'][start:start + seq_len]
-            U = sim['u'][start:start + seq_len]
+                scenarios.append({
+                    'Y': Y,
+                    'U': U,
+                    'fault_mag': fault_mag,
+                    'attack_sensor': attack_sensor,
+                    'epsilon_ratio': rng.uniform(0.25, 1.5),
+                })
+        else:
+            from .process_model import TwoTankProcess
+            for i in range(n_sessions):
+                process = TwoTankProcess(self.sys)
+                s = rng.randint(0, 100000)
+                process.set_seed(s)
 
-            scenarios.append({
-                'Y': Y,
-                'U': U,
-                'fault_mag': fault_mag,
-                'attack_sensor': attack_sensor,
-                'epsilon_ratio': rng.uniform(0.25, 1.5),
-            })
+                # Random fault magnitude (1σ to 4σ)
+                fault_mag = rng.uniform(1.0, 4.0)
+
+                # Random attacked sensor
+                attack_sensor = rng.randint(0, self.sys.n_sensors)
+
+                sim = process.simulate(
+                    seq_len + 100,  # Extra for EKF warm-up
+                    fault_config={
+                        'sensor_idx': [attack_sensor],
+                        'fault_start': 0,
+                        'fault_magnitude': fault_mag,
+                    },
+                    seed=s
+                )
+
+                # Take a window after warm-up
+                start = 50
+                Y = sim['y_faulted'][start:start + seq_len]
+                U = sim['u'][start:start + seq_len]
+
+                scenarios.append({
+                    'Y': Y,
+                    'U': U,
+                    'fault_mag': fault_mag,
+                    'attack_sensor': attack_sensor,
+                    'epsilon_ratio': rng.uniform(0.25, 1.5),
+                })
 
         return scenarios
 

@@ -33,6 +33,7 @@ import json
 import time
 import numpy as np
 from pathlib import Path
+from typing import Optional
 
 # Force UTF-8 output on Windows (avoids cp1252 UnicodeEncodeError for Greek chars)
 if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
@@ -51,9 +52,10 @@ from core.cusum import CUSUMDetector
 from core.iswt import ISWTDetector, combined_alarm, combined_alarm_full
 from core.sds import compute_sds_timeseries
 from core.tca import TargetedConsistencyAttack
-from core.calibration import full_calibration
+from core.calibration import full_calibration, calibrate_ekf, validate_whiteness
 from core.lstm_detector import LSTMDetector
 from core.gan_evasion import train_evasion_gan
+from batadal.batadal_adapter import load_batadal_dataset
 
 # Output directory
 RESULTS_DIR = Path(__file__).resolve().parent.parent / "results" / "s3"
@@ -87,7 +89,7 @@ def time_budget_remaining() -> float:
 # ---------------------------------------------------------------------------
 FAST_MODE = False
 
-# Fast-mode overrides (used only when FAST_MODE=True)
+# Fast-mode overrides (used only when FAST_MODE = False)
 _FAST_K_PGD       = 15    # PGD iterations (vs full)
 _FAST_T_EVAL      = 200   # Eval session length in steps
 _FAST_FAULT_MULTS = [2.0, 4.0]          # Subset of fault magnitudes
@@ -108,6 +110,7 @@ _GPU_GAN_SESSIONS = 50    # Full GAN training
 # ======================================================================
 
 def run_phase_a(config: ExperimentConfig,
+                batadal_data: Optional[dict] = None,
                 verbose: bool = True) -> dict:
     """Train LSTM and evaluate detection performance.
 
@@ -126,10 +129,83 @@ def run_phase_a(config: ExperimentConfig,
     T_train = config.s3_lstm_train_steps
     T_eval = config.s1_session_duration_steps
 
-    # --- Step 1: Calibration ---
-    print("\n[A.1] Running calibration...")
-    calib = full_calibration(sys_cfg, config.s1_calibration_steps,
-                             seed=config.seed)
+    # Dynamic partition if using real data
+    if batadal_data is not None:
+        Y_full = batadal_data['Y']
+        U_full = batadal_data['U']
+        Y_len = len(Y_full)
+        calib_steps = min(config.s1_calibration_steps, Y_len // 4)
+        T_train = min(config.s3_lstm_train_steps, Y_len - calib_steps - T_eval - 100)
+        print(f"  [BATADAL] Adjusted data lengths: calib={calib_steps}, train={T_train}, eval={T_eval}")
+
+        # Calibration using BATADAL slices
+        print("\n[A.1] Running BATADAL calibration...")
+        Y_calib = Y_full[:calib_steps]
+        U_calib = U_full[:calib_steps]
+
+        Q_hat, R = calibrate_ekf(Y_calib, U_calib, sys_cfg)
+        ekf_cfg = EKFConfig(Q_diag=np.diag(Q_hat))
+        ekf = ExtendedKalmanFilter(sys_cfg, ekf_cfg)
+        ekf.set_noise_covariances(Q_hat, R)
+        calib_results = ekf.run_batch(Y_calib, U_calib)
+        whiteness = validate_whiteness(calib_results['innovation'][200:])
+
+        std_innov_calib = calib_results['std_innovation'][200:]
+        baseline_cov = (std_innov_calib.T @ std_innov_calib) / len(std_innov_calib)
+        baseline_cov += np.eye(sys_cfg.n_sensors) * 1e-10
+
+        iswt_cfg = ISWTConfig()
+        iswt = ISWTDetector(sys_cfg.n_sensors, iswt_cfg, baseline_cov=baseline_cov)
+        iswt_res = iswt.run_batch(calib_results['std_innovation'])
+        valid_test_stat = iswt_res['test_stat'][iswt_cfg.W + 200:]
+        if len(valid_test_stat) > 0:
+            iswt_cfg.empirical_critical = np.percentile(valid_test_stat, 95)
+
+        calib = {
+            'Q': Q_hat,
+            'R': R,
+            'ekf_config': ekf_cfg,
+            'iswt_config': iswt_cfg,
+            'baseline_cov': baseline_cov,
+            'whiteness_validation': whiteness,
+        }
+        
+        process = None
+
+        # --- Step 2: Generate LSTM training data and train ---
+        print(f"\n[A.2] Using {T_train}s of clean training data from BATADAL...")
+        Y_train_slice = Y_full[calib_steps : calib_steps + T_train]
+        U_train_slice = U_full[calib_steps : calib_steps + T_train]
+
+        ekf_train = ExtendedKalmanFilter(sys_cfg, ekf_cfg)
+        ekf_train.set_noise_covariances(Q_hat, R)
+        ekf_train_results = ekf_train.run_batch(Y_train_slice, U_train_slice)
+        clean_innovations = ekf_train_results['std_innovation']
+    else:
+        # --- Step 1: Calibration ---
+        print("\n[A.1] Running calibration...")
+        calib = full_calibration(sys_cfg, config.s1_calibration_steps,
+                                 seed=config.seed)
+        ekf_cfg = calib['ekf_config']
+        iswt_cfg = calib['iswt_config']
+        baseline_cov = calib['baseline_cov']
+        Q_hat = calib['Q']
+        R = calib['R']
+        
+        # Process model needed for both training and evaluation branches
+        process = TwoTankProcess(sys_cfg)
+
+        # --- Step 2: Generate LSTM training data and train ---
+        print(f"\n[A.2] Generating {T_train}s of clean training data...")
+        process.set_seed(config.seed + 1000)
+        sim_train = process.simulate(T_train, seed=config.seed + 1000)
+
+        ekf_train = ExtendedKalmanFilter(sys_cfg, ekf_cfg)
+        ekf_train.set_noise_covariances(Q_hat, R)
+        ekf_train_results = ekf_train.run_batch(sim_train['y_noisy'],
+                                                 sim_train['u'])
+        clean_innovations = ekf_train_results['std_innovation']
+
     ekf_cfg = calib['ekf_config']
     iswt_cfg = calib['iswt_config']
     baseline_cov = calib['baseline_cov']
@@ -138,20 +214,6 @@ def run_phase_a(config: ExperimentConfig,
 
     if not calib['whiteness_validation']['passed']:
         print("  WARNING: Whiteness validation failed on clean data")
-
-    # Process model needed for both training and evaluation branches
-    process = TwoTankProcess(sys_cfg)
-
-    # --- Step 2: Generate LSTM training data and train ---
-    print(f"\n[A.2] Generating {T_train}s of clean training data...")
-    process.set_seed(config.seed + 1000)
-    sim_train = process.simulate(T_train, seed=config.seed + 1000)
-
-    ekf_train = ExtendedKalmanFilter(sys_cfg, ekf_cfg)
-    ekf_train.set_noise_covariances(Q_hat, R)
-    ekf_train_results = ekf_train.run_batch(sim_train['y_noisy'],
-                                             sim_train['u'])
-    clean_innovations = ekf_train_results['std_innovation']
 
     # --- Step 3: Train LSTM ---
     print(f"\n[A.3] Training LSTM autoencoder (hidden={config.lstm.hidden_dim}, "
@@ -177,11 +239,17 @@ def run_phase_a(config: ExperimentConfig,
 
     # 4a. FPR on clean data
     print("  Evaluating FPR on clean data...")
-    sim_clean = process.simulate(T_eval, seed=config.seed + 50000)
+    if batadal_data is not None:
+        Y_clean_eval = Y_full[calib_steps + T_train : calib_steps + T_train + T_eval]
+        U_clean_eval = U_full[calib_steps + T_train : calib_steps + T_train + T_eval]
+    else:
+        sim_clean = process.simulate(T_eval, seed=config.seed + 50000)
+        Y_clean_eval = sim_clean['y_noisy']
+        U_clean_eval = sim_clean['u']
+
     ekf_clean = ExtendedKalmanFilter(sys_cfg, ekf_cfg)
     ekf_clean.set_noise_covariances(Q_hat, R)
-    ekf_clean_results = ekf_clean.run_batch(sim_clean['y_noisy'],
-                                              sim_clean['u'])
+    ekf_clean_results = ekf_clean.run_batch(Y_clean_eval, U_clean_eval)
 
     cusum_clean = CUSUMDetector(N, config.cusum)
     cusum_clean_res = cusum_clean.run_batch(
@@ -212,16 +280,23 @@ def run_phase_a(config: ExperimentConfig,
     # 4b. TPR on faulted data (no TCA evasion)
     print("  Evaluating TPR on faulted data...")
     for fault_mult in config.s1_fault_magnitudes:
-        sim_fault = process.simulate(T_eval, fault_config={
-            'sensor_idx': [5],
-            'fault_start': 0,
-            'fault_magnitude': fault_mult,
-        }, seed=config.seed + 60000)
+        if batadal_data is not None:
+            Y_fault_eval = Y_clean_eval.copy()
+            Y_fault_eval[:, 5] += fault_mult * sys_cfg.sigma[5]
+            U_fault_eval = U_clean_eval
+        else:
+            sim_fault = process.simulate(T_eval, fault_config={
+                'sensor_idx': [5],
+                'fault_start': 0,
+                'fault_magnitude': fault_mult,
+            }, seed=config.seed + 60000)
+            Y_fault_eval = sim_fault['y_faulted']
+            U_fault_eval = sim_fault['u']
 
         ekf_fault = ExtendedKalmanFilter(sys_cfg, ekf_cfg)
         ekf_fault.set_noise_covariances(Q_hat, R)
         ekf_fault_results = ekf_fault.run_batch(
-            sim_fault['y_faulted'], sim_fault['u'])
+            Y_fault_eval, U_fault_eval)
 
         cusum_fault = CUSUMDetector(N, config.cusum)
         cusum_fault_res = cusum_fault.run_batch(
@@ -288,6 +363,7 @@ def run_phase_a(config: ExperimentConfig,
 def run_phase_b(config: ExperimentConfig,
                 lstm_detector: LSTMDetector,
                 calib: dict,
+                batadal_data: Optional[dict] = None,
                 verbose: bool = True) -> dict:
     """Compare TCA evasion with and without LSTM in the defense.
 
@@ -324,7 +400,13 @@ def run_phase_b(config: ExperimentConfig,
               f"faults={fault_mults}, eps={eps_ratios}, "
               f"device={DEVICE}")
 
-    process = TwoTankProcess(sys_cfg)
+    if batadal_data is not None:
+        process = None
+        Y_clean_eval = batadal_data['Y'][-T_eval:]
+        U_clean_eval = batadal_data['U'][-T_eval:]
+    else:
+        process = TwoTankProcess(sys_cfg)
+        
     table7 = {}
 
     for fault_mult in fault_mults:
@@ -338,15 +420,19 @@ def run_phase_b(config: ExperimentConfig,
             print(f"\n  --- Fault={fault_mult}σ, ε/σ={eps_ratio} "
                   f"(budget left: {time_budget_remaining()/60:.1f} min) ---")
 
-            # Generate faulted data
-            sim = process.simulate(T_eval, fault_config={
-                'sensor_idx': [5],
-                'fault_start': 0,
-                'fault_magnitude': fault_mult,
-            }, seed=config.seed + int(fault_mult * 1000))
-
-            Y_faulted = sim['y_faulted']
-            U = sim['u']
+            if batadal_data is not None:
+                Y_faulted = Y_clean_eval.copy()
+                Y_faulted[:, 5] += fault_mult * sys_cfg.sigma[5]
+                U = U_clean_eval
+            else:
+                sim = process.simulate(T_eval, fault_config={
+                    'sensor_idx': [5],
+                    'fault_start': 0,
+                    'fault_magnitude': fault_mult,
+                }, seed=config.seed + int(fault_mult * 1000))
+                Y_faulted = sim['y_faulted']
+                U = sim['u']
+                
             epsilon = eps_ratio * fault_mult * sys_cfg.sigma
 
             # Override K based on mode
@@ -464,6 +550,7 @@ def run_phase_b(config: ExperimentConfig,
 def run_phase_c(config: ExperimentConfig,
                 lstm_detector: LSTMDetector,
                 calib: dict,
+                batadal_data: Optional[dict] = None,
                 verbose: bool = True) -> dict:
     """Train GAN and compare with PGD.
 
@@ -554,7 +641,13 @@ def run_phase_c(config: ExperimentConfig,
     # --- Step 2: Compare GAN vs PGD ---
     print("\n[C.2] Comparing GAN vs PGD...")
     table8 = {}
-    process = TwoTankProcess(sys_cfg)
+    if batadal_data is not None:
+        process = None
+        Y_clean_eval = batadal_data['Y'][-T_eval:]
+        U_clean_eval = batadal_data['U'][-T_eval:]
+    else:
+        process = TwoTankProcess(sys_cfg)
+        
     gan_seq_len = config.gan.seq_len
 
     for fault_mult in fault_mults_c:
@@ -570,15 +663,19 @@ def run_phase_c(config: ExperimentConfig,
 
             epsilon = eps_ratio * fault_mult * sys_cfg.sigma
 
-            # Generate evaluation data
-            sim = process.simulate(T_eval, fault_config={
-                'sensor_idx': [5],
-                'fault_start': 0,
-                'fault_magnitude': fault_mult,
-            }, seed=config.seed + int(fault_mult * 2000))
-
-            Y_faulted = sim['y_faulted']
-            U = sim['u']
+            if batadal_data is not None:
+                Y_faulted = Y_clean_eval.copy()
+                Y_faulted[:, 5] += fault_mult * sys_cfg.sigma[5]
+                U = U_clean_eval
+            else:
+                # Generate evaluation data
+                sim = process.simulate(T_eval, fault_config={
+                    'sensor_idx': [5],
+                    'fault_start': 0,
+                    'fault_magnitude': fault_mult,
+                }, seed=config.seed + int(fault_mult * 2000))
+                Y_faulted = sim['y_faulted']
+                U = sim['u']
 
             # --- PGD baseline ---
             print("    Running PGD...")
@@ -720,16 +817,26 @@ def main():
     t_start = time.time()
     _EXPERIMENT_START = t_start  # Arm the wall-clock budget
 
+    # Load BATADAL dataset if available
+    batadal_dir = Path(__file__).resolve().parent.parent / "batadal" / "dataset"
+    batadal_data = None
+    if (batadal_dir / "BATADAL_dataset03.csv").exists():
+        try:
+            batadal_data = load_batadal_dataset(str(batadal_dir), mode='normal')
+            print("  [BATADAL] Real BATADAL dataset loaded successfully for AI experiments.")
+        except Exception as e:
+            print(f"  [BATADAL] Failed to load BATADAL: {e}")
+
     # Phase A: Train LSTM, establish detection baselines
-    phase_a = run_phase_a(config, verbose=True)
+    phase_a = run_phase_a(config, batadal_data=batadal_data, verbose=True)
     lstm_detector = phase_a['lstm_detector']
     calib = phase_a['calib']
 
     # Phase B: Adversarial PGD attacks on LSTM
-    phase_b = run_phase_b(config, lstm_detector, calib, verbose=True)
+    phase_b = run_phase_b(config, lstm_detector, calib, batadal_data=batadal_data, verbose=True)
 
     # Phase C: GAN vs PGD comparison
-    phase_c = run_phase_c(config, lstm_detector, calib, verbose=True)
+    phase_c = run_phase_c(config, lstm_detector, calib, batadal_data=batadal_data, verbose=True)
 
     elapsed = time.time() - t_start
     print(f"\n{'=' * 70}")
